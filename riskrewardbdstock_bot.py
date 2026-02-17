@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation states
-MAIN_MENU, FORM_FILLING, EDIT_FIELD, CONFIRMATION = range(4)
+(SYMBOL, CAPITAL, RISK, BUY, SL, TP, CONFIRM) = range(7)
 
 # Environment Variables
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -114,50 +114,27 @@ def format_signal_card(data, show_delete_button=False):
         return card, InlineKeyboardMarkup(keyboard)
     return card, None
 
-def format_form_display(user_data):
-    """HTML ফর্মের মত ডিজাইনে ফর্ম তৈরি করে"""
-    
-    # ফিল্ডের মান গুলো নেওয়া
-    symbol = user_data.get('symbol', '_________')
-    
-    # ক্যাপিটাল ফরম্যাট
-    if user_data.get('capital'):
-        capital = f"{user_data['capital']:,.0f} BDT"
-    else:
-        capital = '_________'
-    
-    # রিস্ক ফরম্যাট
-    if user_data.get('risk'):
-        risk = f"{user_data['risk']*100:.1f}%"
-    else:
-        risk = '_________'
-    
-    buy = user_data.get('buy', '_________')
-    sl = user_data.get('sl', '_________')
-    tp = user_data.get('tp', '_________')
-    
-    form = (
-        "╔══════════════════════════════════════╗\n"
-        "║     📝 স্টক সিগন্যাল ফর্ম           ║\n"
-        "╠══════════════════════════════════════╣\n"
-        f"║ 📌 সিম্বল      : {symbol:<15} ║\n"
-        f"║ 💰 ক্যাপিটাল   : {capital:<15} ║\n"
-        f"║ ⚠️ রিস্ক       : {risk:<15} ║\n"
-        f"║ 📈 বাই         : {buy:<15} ║\n"
-        f"║ 📉 এসএল        : {sl:<15} ║\n"
-        f"║ 🎯 টিপি        : {tp:<15} ║\n"
-        "╠══════════════════════════════════════╣\n"
-        "║ নিচের বাটন ব্যবহার করে ফর্ম পূরণ করুন ║\n"
-        "╚══════════════════════════════════════╝"
+def format_form_preview(symbol, capital, risk, buy, sl, tp):
+    """ফর্ম প্রিভিউ দেখায়"""
+    preview = (
+        "╔════════════════════════════════╗\n"
+        "║     📝 আপনার দেওয়া তথ্য       ║\n"
+        "╠════════════════════════════════╣\n"
+        f"║ 📌 সিম্বল      : {symbol:<12} ║\n"
+        f"║ 💰 ক্যাপিটাল   : {capital:,.0f} BDT        ║\n"
+        f"║ ⚠️ রিস্ক       : {risk*100:.1f}%            ║\n"
+        f"║ 📈 বাই         : {buy:<12} ║\n"
+        f"║ 📉 এসএল        : {sl:<12} ║\n"
+        f"║ 🎯 টিপি        : {tp:<12} ║\n"
+        "╚════════════════════════════════╝"
     )
-    return form
+    return preview
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     keyboard = [
         [InlineKeyboardButton("📝 নতুন সিগন্যাল", callback_data="new_signal")],
-        [InlineKeyboardButton("📊 সংরক্ষিত সিগন্যাল", callback_data="view_signals")],
-        [InlineKeyboardButton("❓ সাহায্য", callback_data="help")]
+        [InlineKeyboardButton("📊 সংরক্ষিত সিগন্যাল", callback_data="view_signals")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -168,311 +145,207 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
-    return MAIN_MENU
 
-async def help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """হেল্প মেনু দেখায়"""
+async def new_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """নতুন সিগন্যাল ফর্ম শুরু"""
     query = update.callback_query
     await query.answer()
     
-    help_text = (
-        "📚 **Risk Reward BD Stock Bot - সাহায্য**\n\n"
-        
-        "**কমান্ড সমূহ:**\n"
-        "/start - বট শুরু করুন\n\n"
-        
-        "**ফর্ম ইনপুট সিস্টেম:**\n"
-        "1️⃣ 'নতুন সিগন্যাল' বাটনে ক্লিক করুন\n"
-        "2️⃣ প্রতিটি ফিল্ডের জন্য বাটন থাকবে\n"
-        "3️⃣ বাটন ক্লিক করে মান বসান\n"
-        "4️⃣ সব ফিল্ড পূরণ হলে Submit বাটনে ক্লিক করুন\n\n"
-        
-        "**ফিল্ড সমূহ:**\n"
-        "• 📌 সিম্বল - স্টক সিম্বল (যেমন: aaa)\n"
-        "• 💰 ক্যাপিটাল - মোট ট্রেডিং ক্যাপিটাল (BDT)\n"
-        "• ⚠️ রিস্ক - প্রতি ট্রেডে রিস্কের শতাংশ (যেমন: 0.01)\n"
-        "• 📈 বাই - ক্রয় মূল্য\n"
-        "• 📉 এসএল - স্টপ লস\n"
-        "• 🎯 টিপি - টার্গেট প্রাইস\n\n"
-        
-        "**আউটপুট ফরম্যাট:**\n"
-        "📊 সিম্বল\n"
-        "📉 SL | 🎯 TP (পাশাপাশি)\n"
-        "📊 RRR | 📏 ডিফ (পাশাপাশি)"
-    )
-    
-    keyboard = [[InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]]
     await query.edit_message_text(
-        help_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        "📝 **নতুন স্টক সিগন্যাল**\n\n"
+        "প্রথমে **সিম্বল** লিখুন (যেমন: aaa):\n"
+        "👉 /cancel দিয়ে বাতিল করতে পারেন"
     )
+    return SYMBOL
 
-async def show_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """মেইন ফর্ম দেখায়"""
-    query = update.callback_query
-    await query.answer()
+async def get_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """সিম্বল ইনপুট নেওয়া"""
+    symbol = update.message.text.strip().upper()
     
-    # ফর্ম বাটন তৈরি
-    keyboard = [
-        [InlineKeyboardButton("📌 সিম্বল সেট করুন", callback_data="set_symbol")],
-        [InlineKeyboardButton("💰 ক্যাপিটাল সেট করুন", callback_data="set_capital")],
-        [InlineKeyboardButton("⚠️ রিস্ক সেট করুন", callback_data="set_risk")],
-        [InlineKeyboardButton("📈 বাই সেট করুন", callback_data="set_buy")],
-        [InlineKeyboardButton("📉 এসএল সেট করুন", callback_data="set_sl")],
-        [InlineKeyboardButton("🎯 টিপি সেট করুন", callback_data="set_tp")],
-        [InlineKeyboardButton("✅ ফর্ম জমা দিন", callback_data="submit_form")],
-        [InlineKeyboardButton("🗑️ ফর্ম ক্লিয়ার", callback_data="clear_form")],
-        [InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    if len(symbol) > 10:
+        await update.message.reply_text("❌ সিম্বল ১০ অক্ষরের বেশি হতে পারবে না। আবার দিন:")
+        return SYMBOL
     
-    # ফর্ম ডিসপ্লে
-    form_display = format_form_display(context.user_data)
+    context.user_data['symbol'] = symbol
     
-    await query.edit_message_text(
-        f"{form_display}\n\n"
-        "বাটন ক্লিক করে ফর্ম পূরণ করুন:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+    await update.message.reply_text(
+        f"✅ সিম্বল: {symbol}\n\n"
+        "এখন **টোটাল ক্যাপিটাল** লিখুন (যেমন: 500000):\n"
+        "👉 শুধু সংখ্যা দিন"
     )
-    return FORM_FILLING
+    return CAPITAL
 
-async def handle_form_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ফর্মের ইনপুট হ্যান্ডল করে"""
-    query = update.callback_query
-    await query.answer()
-    
-    field = query.data.replace("set_", "")
-    context.user_data['current_field'] = field
-    
-    field_names = {
-        'symbol': '📌 সিম্বল',
-        'capital': '💰 ক্যাপিটাল',
-        'risk': '⚠️ রিস্ক',
-        'buy': '📈 বাই',
-        'sl': '📉 এসএল',
-        'tp': '🎯 টিপি'
-    }
-    
-    examples = {
-        'symbol': 'aaa',
-        'capital': '500000',
-        'risk': '0.01 (1% এর জন্য)',
-        'buy': '30',
-        'sl': '29',
-        'tp': '39'
-    }
-    
-    await query.edit_message_text(
-        f"✏️ {field_names[field]} লিখুন:\n\n"
-        f"উদাহরণ: {examples[field]}\n\n"
-        "মান লিখে পাঠান (/cancel দিয়ে ফর্মে ফিরতে পারেন)"
-    )
-    return EDIT_FIELD
-
-async def save_field_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ফিল্ডের মান সংরক্ষণ করে"""
-    field = context.user_data.get('current_field')
-    value = update.message.text.strip()
-    
+async def get_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ক্যাপিটাল ইনপুট নেওয়া"""
     try:
-        # ভ্যালিডেশন
-        if field == 'symbol':
-            value = value.upper()
-            if len(value) > 10:
-                await update.message.reply_text("❌ সিম্বল ১০ অক্ষরের বেশি হতে পারবে না। আবার দিন:")
-                return EDIT_FIELD
-            context.user_data['symbol'] = value
+        capital = float(update.message.text.replace(',', ''))
+        if capital <= 0:
+            await update.message.reply_text("❌ ক্যাপিটাল পজিটিভ হতে হবে। আবার দিন:")
+            return CAPITAL
         
-        elif field == 'capital':
-            capital = float(value.replace(',', ''))
-            if capital <= 0:
-                await update.message.reply_text("❌ ক্যাপিটাল পজিটিভ হতে হবে। আবার দিন:")
-                return EDIT_FIELD
-            context.user_data['capital'] = capital
+        context.user_data['capital'] = capital
         
-        elif field == 'risk':
-            risk = float(value)
-            if risk <= 0 or risk > 1:
-                await update.message.reply_text("❌ রিস্ক ০ থেকে ১ এর মধ্যে হতে হবে। আবার দিন:")
-                return EDIT_FIELD
-            context.user_data['risk'] = risk
+        await update.message.reply_text(
+            f"✅ ক্যাপিটাল: {capital:,.0f} BDT\n\n"
+            "এখন **রিস্ক পার্সেন্ট** লিখুন (যেমন: 0.01 = 1%):\n"
+            "👉 ০ থেকে ১ এর মধ্যে সংখ্যা দিন"
+        )
+        return RISK
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return CAPITAL
+
+async def get_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """রিস্ক পার্সেন্ট ইনপুট নেওয়া"""
+    try:
+        risk = float(update.message.text)
+        if risk <= 0 or risk > 1:
+            await update.message.reply_text("❌ রিস্ক ০ থেকে ১ এর মধ্যে হতে হবে। আবার দিন:")
+            return RISK
         
-        elif field == 'buy':
-            buy = float(value)
-            if buy <= 0:
-                await update.message.reply_text("❌ বাই প্রাইস পজিটিভ হতে হবে। আবার দিন:")
-                return EDIT_FIELD
-            context.user_data['buy'] = buy
+        context.user_data['risk'] = risk
         
-        elif field == 'sl':
-            sl = float(value)
-            if sl <= 0:
-                await update.message.reply_text("❌ এসএল প্রাইস পজিটিভ হতে হবে। আবার দিন:")
-                return EDIT_FIELD
-            if 'buy' in context.user_data and sl >= context.user_data['buy']:
-                await update.message.reply_text("❌ এসএল বাই থেকে কম হতে হবে। আবার দিন:")
-                return EDIT_FIELD
-            context.user_data['sl'] = sl
+        await update.message.reply_text(
+            f"✅ রিস্ক: {risk*100:.1f}%\n\n"
+            "এখন **বাই প্রাইস** লিখুন (যেমন: 30):"
+        )
+        return BUY
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return RISK
+
+async def get_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """বাই প্রাইস ইনপুট নেওয়া"""
+    try:
+        buy = float(update.message.text)
+        if buy <= 0:
+            await update.message.reply_text("❌ বাই প্রাইস পজিটিভ হতে হবে। আবার দিন:")
+            return BUY
         
-        elif field == 'tp':
-            tp = float(value)
-            if tp <= 0:
-                await update.message.reply_text("❌ টিপি প্রাইস পজিটিভ হতে হবে। আবার দিন:")
-                return EDIT_FIELD
-            if 'buy' in context.user_data and tp <= context.user_data['buy']:
-                await update.message.reply_text("❌ টিপি বাই থেকে বেশি হতে হবে। আবার দিন:")
-                return EDIT_FIELD
-            context.user_data['tp'] = tp
+        context.user_data['buy'] = buy
         
-        # ফর্মে ফিরে যান
+        await update.message.reply_text(
+            f"✅ বাই: {buy}\n\n"
+            "এখন **এসএল প্রাইস** লিখুন (যেমন: 29):\n"
+            "👉 এসএল বাই থেকে কম হতে হবে"
+        )
+        return SL
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return BUY
+
+async def get_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """এসএল প্রাইস ইনপুট নেওয়া"""
+    try:
+        sl = float(update.message.text)
+        if sl <= 0:
+            await update.message.reply_text("❌ এসএল প্রাইস পজিটিভ হতে হবে। আবার দিন:")
+            return SL
+        
+        if sl >= context.user_data['buy']:
+            await update.message.reply_text("❌ এসএল বাই থেকে কম হতে হবে। আবার দিন:")
+            return SL
+        
+        context.user_data['sl'] = sl
+        
+        await update.message.reply_text(
+            f"✅ এসএল: {sl}\n\n"
+            "এখন **টিপি প্রাইস** লিখুন (যেমন: 39):\n"
+            "👉 টিপি বাই থেকে বেশি হতে হবে"
+        )
+        return TP
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return SL
+
+async def get_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """টিপি প্রাইস ইনপুট নেওয়া"""
+    try:
+        tp = float(update.message.text)
+        if tp <= 0:
+            await update.message.reply_text("❌ টিপি প্রাইস পজিটিভ হতে হবে। আবার দিন:")
+            return TP
+        
+        if tp <= context.user_data['buy']:
+            await update.message.reply_text("❌ টিপি বাই থেকে বেশি হতে হবে। আবার দিন:")
+            return TP
+        
+        context.user_data['tp'] = tp
+        
+        # সব ডাটা নিয়ে প্রিভিউ দেখান
+        preview = format_form_preview(
+            context.user_data['symbol'],
+            context.user_data['capital'],
+            context.user_data['risk'],
+            context.user_data['buy'],
+            context.user_data['sl'],
+            tp
+        )
+        
+        # কনফার্মেশন বাটন
         keyboard = [
-            [InlineKeyboardButton("📌 সিম্বল সেট করুন", callback_data="set_symbol")],
-            [InlineKeyboardButton("💰 ক্যাপিটাল সেট করুন", callback_data="set_capital")],
-            [InlineKeyboardButton("⚠️ রিস্ক সেট করুন", callback_data="set_risk")],
-            [InlineKeyboardButton("📈 বাই সেট করুন", callback_data="set_buy")],
-            [InlineKeyboardButton("📉 এসএল সেট করুন", callback_data="set_sl")],
-            [InlineKeyboardButton("🎯 টিপি সেট করুন", callback_data="set_tp")],
-            [InlineKeyboardButton("✅ ফর্ম জমা দিন", callback_data="submit_form")],
-            [InlineKeyboardButton("🗑️ ফর্ম ক্লিয়ার", callback_data="clear_form")],
-            [InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]
+            [
+                InlineKeyboardButton("✅ সংরক্ষণ করুন", callback_data="confirm_save"),
+                InlineKeyboardButton("❌ বাতিল", callback_data="cancel_save")
+            ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        form_display = format_form_display(context.user_data)
-        
         await update.message.reply_text(
-            f"✅ {field} সেট করা হয়েছে!\n\n"
-            f"{form_display}",
+            f"{preview}\n\n"
+            "আপনার দেওয়া তথ্য যাচাই করুন। সংরক্ষণ করতে চান?",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-        return FORM_FILLING
+        return CONFIRM
         
     except ValueError:
-        await update.message.reply_text("❌ সঠিক মান দিন। আবার চেষ্টা করুন:")
-        return EDIT_FIELD
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return TP
 
-async def submit_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ফর্ম জমা দেয়"""
+async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """সংরক্ষণ নিশ্চিত করা"""
     query = update.callback_query
     await query.answer()
     
-    # সব ফিল্ড চেক করা
-    required_fields = ['symbol', 'capital', 'risk', 'buy', 'sl', 'tp']
-    missing = []
-    
-    for field in required_fields:
-        if field not in context.user_data:
-            field_names = {
-                'symbol': 'সিম্বল',
-                'capital': 'ক্যাপিটাল',
-                'risk': 'রিস্ক', 
-                'buy': 'বাই',
-                'sl': 'এসএল',
-                'tp': 'টিপি'
-            }
-            missing.append(field_names[field])
-    
-    if missing:
-        await query.edit_message_text(
-            f"❌ নিচের ফিল্ডগুলো পূরণ হয়নি:\n{', '.join(missing)}\n\n"
-            "বাটন ক্লিক করে ফিল্ডগুলো পূরণ করুন।"
+    if query.data == "confirm_save":
+        # ক্যালকুলেশন
+        result = calculate_position(
+            context.user_data['symbol'],
+            context.user_data['capital'],
+            context.user_data['risk'],
+            context.user_data['buy'],
+            context.user_data['sl'],
+            context.user_data['tp']
         )
-        return FORM_FILLING
-    
-    # ক্যালকুলেশন
-    result = calculate_position(
-        context.user_data['symbol'],
-        context.user_data['capital'],
-        context.user_data['risk'],
-        context.user_data['buy'],
-        context.user_data['sl'],
-        context.user_data['tp']
-    )
-    
-    if "error" in result:
-        await query.edit_message_text(f"❌ {result['error']}")
-        return FORM_FILLING
-    
-    # প্রিভিউ দেখান
-    card_text, _ = format_signal_card(result, show_delete_button=False)
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ সংরক্ষণ করুন", callback_data="save_signal"),
-            InlineKeyboardButton("📝 এডিট করুন", callback_data="back_to_form")
-        ],
-        [InlineKeyboardButton("❌ বাতিল", callback_data="cancel_form")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    context.user_data['preview_result'] = result
-    
-    await query.edit_message_text(
-        f"{card_text}\n\n"
-        "✅ সব ফিল্ড পূরণ হয়েছে। সংরক্ষণ করতে চান?",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-    return CONFIRMATION
-
-async def save_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """সিগন্যাল সংরক্ষণ করে"""
-    query = update.callback_query
-    await query.answer()
-    
-    result = context.user_data['preview_result']
-    
-    # MongoDB-তে সংরক্ষণ
-    result['user_id'] = query.from_user.id
-    result['username'] = query.from_user.username or query.from_user.first_name
-    
-    insert_result = collection.insert_one(result)
-    result['_id'] = insert_result.inserted_id
-    
-    # ফাইনাল কার্ড
-    card_text, keyboard = format_signal_card(result, show_delete_button=True)
-    
-    await query.edit_message_text(
-        f"{card_text}\n\n✅ সিগন্যাল সংরক্ষণ করা হয়েছে!",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
+        
+        if "error" in result:
+            await query.edit_message_text(f"❌ {result['error']}")
+            return ConversationHandler.END
+        
+        # MongoDB-তে সংরক্ষণ
+        result['user_id'] = query.from_user.id
+        result['username'] = query.from_user.username or query.from_user.first_name
+        
+        insert_result = collection.insert_one(result)
+        result['_id'] = insert_result.inserted_id
+        
+        # ফাইনাল কার্ড দেখান
+        card_text, keyboard = format_signal_card(result, show_delete_button=True)
+        
+        await query.edit_message_text(
+            f"{card_text}\n\n✅ সিগন্যাল সংরক্ষণ করা হয়েছে!",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        logger.info(f"Signal saved for {result['symbol']} by {query.from_user.username}")
+        
+    else:
+        await query.edit_message_text("❌ সংরক্ষণ বাতিল করা হয়েছে।")
     
     context.user_data.clear()
     return ConversationHandler.END
-
-async def clear_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ফর্ম ক্লিয়ার করে"""
-    query = update.callback_query
-    await query.answer()
-    
-    context.user_data.clear()
-    
-    keyboard = [
-        [InlineKeyboardButton("📌 সিম্বল সেট করুন", callback_data="set_symbol")],
-        [InlineKeyboardButton("💰 ক্যাপিটাল সেট করুন", callback_data="set_capital")],
-        [InlineKeyboardButton("⚠️ রিস্ক সেট করুন", callback_data="set_risk")],
-        [InlineKeyboardButton("📈 বাই সেট করুন", callback_data="set_buy")],
-        [InlineKeyboardButton("📉 এসএল সেট করুন", callback_data="set_sl")],
-        [InlineKeyboardButton("🎯 টিপি সেট করুন", callback_data="set_tp")],
-        [InlineKeyboardButton("✅ ফর্ম জমা দিন", callback_data="submit_form")],
-        [InlineKeyboardButton("🗑️ ফর্ম ক্লিয়ার", callback_data="clear_form")],
-        [InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    form_display = format_form_display({})
-    
-    await query.edit_message_text(
-        f"{form_display}\n\n"
-        "🔄 ফর্ম ক্লিয়ার করা হয়েছে। নতুন করে পূরণ করুন:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-    return FORM_FILLING
 
 async def view_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """সংরক্ষিত সিগন্যাল দেখায়"""
@@ -487,7 +360,7 @@ async def view_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📭 আপনার কোনো সিগন্যাল নেই।",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return MAIN_MENU
+        return
     
     # RRR অনুযায়ী সাজানো (উচ্চ থেকে নিম্ন) এবং তারপর diff (নিম্ন থেকে উচ্চ)
     sorted_signals = sorted(signals, key=lambda x: (-x['rrr'], x['diff']))
@@ -507,7 +380,6 @@ async def view_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "মেনুতে ফিরতে বাটন ক্লিক করুন:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return MAIN_MENU
 
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """মেইন মেনুতে ফিরে যায়"""
@@ -516,8 +388,7 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("📝 নতুন সিগন্যাল", callback_data="new_signal")],
-        [InlineKeyboardButton("📊 সংরক্ষিত সিগন্যাল", callback_data="view_signals")],
-        [InlineKeyboardButton("❓ সাহায্য", callback_data="help")]
+        [InlineKeyboardButton("📊 সংরক্ষিত সিগন্যাল", callback_data="view_signals")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -527,7 +398,6 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
-    return MAIN_MENU
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ডিলিট বাটনের কলব্যাক হ্যান্ডলার"""
@@ -568,35 +438,26 @@ async def run_bot():
         
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         
-        # কনভারসেশন হ্যান্ডলার
-        conv_handler = ConversationHandler(
-            entry_points=[CommandHandler('start', start)],
+        # স্টক ফর্ম কনভারসেশন হ্যান্ডলার
+        stock_form_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(new_signal, pattern="^new_signal$")],
             states={
-                MAIN_MENU: [
-                    CallbackQueryHandler(show_form, pattern="^new_signal$"),
-                    CallbackQueryHandler(view_signals, pattern="^view_signals$"),
-                    CallbackQueryHandler(help_menu, pattern="^help$"),
-                    CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"),
-                ],
-                FORM_FILLING: [
-                    CallbackQueryHandler(handle_form_input, pattern="^set_"),
-                    CallbackQueryHandler(submit_form, pattern="^submit_form$"),
-                    CallbackQueryHandler(clear_form, pattern="^clear_form$"),
-                    CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"),
-                ],
-                EDIT_FIELD: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, save_field_value),
-                ],
-                CONFIRMATION: [
-                    CallbackQueryHandler(save_signal, pattern="^save_signal$"),
-                    CallbackQueryHandler(show_form, pattern="^back_to_form$"),
-                    CallbackQueryHandler(back_to_menu, pattern="^cancel_form$"),
-                ],
+                SYMBOL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_symbol)],
+                CAPITAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_capital)],
+                RISK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_risk)],
+                BUY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy)],
+                SL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_sl)],
+                TP: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_tp)],
+                CONFIRM: [CallbackQueryHandler(confirm_save, pattern="^(confirm_save|cancel_save)$")],
             },
             fallbacks=[CommandHandler('cancel', cancel)],
         )
         
-        app.add_handler(conv_handler)
+        # হ্যান্ডলার যোগ
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CallbackQueryHandler(view_signals, pattern="^view_signals$"))
+        app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
+        app.add_handler(stock_form_handler)
         app.add_handler(CallbackQueryHandler(button_callback, pattern="^(delete_all|delete_.*)$"))
         
         logger.info("✅ বট চালু হয়েছে")
@@ -605,7 +466,6 @@ async def run_bot():
         await app.start()
         await app.updater.start_polling()
         
-        # বট চলতে থাকবে
         try:
             while True:
                 await asyncio.sleep(1)
