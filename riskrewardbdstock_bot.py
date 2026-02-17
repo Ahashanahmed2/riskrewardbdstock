@@ -3,7 +3,15 @@ import sys
 import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import (
+    Application, 
+    CommandHandler, 
+    ContextTypes, 
+    CallbackQueryHandler,
+    ConversationHandler,
+    MessageHandler,
+    filters
+)
 from pymongo import MongoClient
 from datetime import datetime
 import certifi
@@ -15,6 +23,9 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Conversation states
+SYMBOL, CAPITAL, RISK, BUY, SL, TP, CONFIRM = range(7)
 
 # Environment Variables
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -43,16 +54,16 @@ def calculate_position(symbol, total_capital, risk_percent, buy_price, sl_price,
     """ট্রেডিং প্যারামিটার ক্যালকুলেট করে"""
     try:
         if buy_price <= sl_price:
-            return {"error": "❌ buy price must be greater than SL price"}
+            return {"error": "❌ বাই প্রাইস এসএল থেকে বেশি হতে হবে"}
         
         if tp_price <= buy_price:
-            return {"error": "❌ TP price must be greater than buy price"}
+            return {"error": "❌ টিপি প্রাইস বাই থেকে বেশি হতে হবে"}
         
         risk_per_trade = total_capital * risk_percent
         risk_per_share = buy_price - sl_price
         
         if risk_per_share <= 0:
-            return {"error": "❌ Invalid risk per share calculation"}
+            return {"error": "❌ ইনভ্যালিড রিস্ক পার শেয়ার ক্যালকুলেশন"}
         
         position_size = int(risk_per_trade / risk_per_share)
         position_size = max(1, position_size)
@@ -77,10 +88,10 @@ def calculate_position(symbol, total_capital, risk_percent, buy_price, sl_price,
             "created_at": datetime.now()
         }
     except Exception as e:
-        return {"error": f"❌ Calculation error: {str(e)}"}
+        return {"error": f"❌ ক্যালকুলেশন এরর: {str(e)}"}
 
 def format_signal_card(data, show_delete_button=False):
-    """সিগন্যাল কার্ড ফরম্যাট তৈরি করে - SL/TP পাশাপাশি এবং RRR/ডিফ পাশাপাশি"""
+    """সিগন্যাল কার্ড ফরম্যাট তৈরি করে"""
     card = (
         f"📊 **{data['symbol']}**\n"
         f"━━━━━━━━━━━━━━\n"
@@ -108,69 +119,246 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 হ্যালো {user.first_name}!\n"
         "আমি **Risk Reward BD Stock Bot**\n\n"
         "📌 **কমান্ড সমূহ:**\n"
-        "/stock [সিম্বল] [ক্যাপিটাল] [রিস্ক%] [বাই] [এসএল] [টিপি] - নতুন সিগন্যাল যোগ করুন\n"
+        "/stock - নতুন সিগন্যাল যোগ করুন (স্টেপ বাই স্টেপ)\n"
         "/ok - MongoDB থেকে সাজানো সিগন্যাল দেখুন\n"
-        "/clear - সব সিগন্যাল ডিলিট করুন\n"
+        "/clear - সব সিগن্যাল ডিলিট করুন\n"
+        "/cancel - কোন অপারেশন বাতিল করুন\n"
         "/help - সাহায্য দেখুন\n\n"
         "📝 **উদাহরণ:**\n"
-        "/stock aaa 500000 0.01 30 29 39"
+        "/stock - তারপর ধাপে ধাপে তথ্য দিন"
     )
 
-async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """নতুন স্টক সিগন্যাল যোগ করে এবং MongoDB-তে সংরক্ষণ করে"""
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """হেল্প কমান্ড"""
+    help_text = (
+        "📚 **Risk Reward BD Stock Bot - সাহায্য**\n\n"
+        
+        "**কমান্ড সমূহ:**\n"
+        "/start - বট শুরু করুন\n"
+        "/help - এই হেল্প মেসেজ দেখুন\n"
+        "/stock - নতুন সিগন্যাল যোগ করুন (স্টেপ বাই স্টেপ)\n"
+        "/ok - সংরক্ষিত সিগন্যাল দেখুন\n"
+        "/clear - সব সিগন্যাল ডিলিট করুন\n"
+        "/cancel - কোন অপারেশন বাতিল করুন\n\n"
+        
+        "**স্টক ক্যালকুলেশন স্টেপ বাই স্টেপ:**\n"
+        "1️⃣ /stock কমান্ড দিন\n"
+        "2️⃣ সিম্বল দিন (যেমন: aaa)\n"
+        "3️⃣ টোটাল ক্যাপিটাল দিন (যেমন: 500000)\n"
+        "4️⃣ রিস্ক পার্সেন্ট দিন (যেমন: 0.01)\n"
+        "5️⃣ বাই প্রাইস দিন (যেমন: 30)\n"
+        "6️⃣ এসএল প্রাইস দিন (যেমন: 29)\n"
+        "7️⃣ টিপি প্রাইস দিন (যেমন: 39)\n"
+        "8️⃣ কনফার্ম করুন\n\n"
+        
+        "**আউটপুট ফরম্যাট:**\n"
+        "📊 সিম্বল\n"
+        "💰 ক্যাপিটাল\n"
+        "⚠️ রিস্ক%\n"
+        "📈 বাই\n"
+        "📉 SL | 🎯 TP (পাশাপাশি)\n"
+        "📊 RRR | 📏 ডিফ (পাশাপাশি)\n"
+        "📦 পজিশন সাইজ\n"
+        "💵 এক্সপোজার\n"
+        "⚡ একচুয়াল রিস্ক"
+    )
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def stock_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """স্টক কনভারসেশন শুরু"""
+    await update.message.reply_text(
+        "📝 **নতুন স্টক সিগন্যাল তৈরি**\n\n"
+        "প্রথমে **সিম্বল** দিন (যেমন: aaa):\n"
+        "👉 /cancel দিয়ে বাতিল করতে পারেন"
+    )
+    return SYMBOL
+
+async def get_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """সিম্বল ইনপুট নেওয়া"""
+    symbol = update.message.text.strip().upper()
+    
+    if len(symbol) > 10:
+        await update.message.reply_text("❌ সিম্বল ১০ অক্ষরের বেশি হতে পারবে না। আবার দিন:")
+        return SYMBOL
+    
+    context.user_data['symbol'] = symbol
+    await update.message.reply_text(
+        f"✅ সিম্বল: {symbol}\n\n"
+        "এখন **টোটাল ক্যাপিটাল** দিন (যেমন: 500000):\n"
+        "👉 শুধু সংখ্যা দিন, কমা বা বিডিটি লেখার দরকার নেই"
+    )
+    return CAPITAL
+
+async def get_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ক্যাপিটাল ইনপুট নেওয়া"""
     try:
-        if len(context.args) != 6:
-            await update.message.reply_text(
-                "❌ **ভুল ফরম্যাট!**\n\n"
-                "সঠিক ব্যবহার:\n"
-                "/stock [সিম্বল] [ক্যাপিটাল] [রিস্ক%] [বাই] [এসএল] [টিপি]\n\n"
-                "উদাহরণ:\n"
-                "/stock aaa 500000 0.01 30 29 39"
-            )
-            return
+        capital = float(update.message.text.replace(',', ''))
+        if capital <= 0:
+            await update.message.reply_text("❌ ক্যাপিটাল পজিটিভ হতে হবে। আবার দিন:")
+            return CAPITAL
         
-        symbol = context.args[0].upper()
-        total_capital = float(context.args[1])
-        risk_percent = float(context.args[2])
-        buy_price = float(context.args[3])
-        sl_price = float(context.args[4])
-        tp_price = float(context.args[5])
+        context.user_data['capital'] = capital
+        await update.message.reply_text(
+            f"✅ ক্যাপিটাল: {capital:,.0f} BDT\n\n"
+            "এখন **রিস্ক পার্সেন্ট** দিন (যেমন: 0.01 = 1%):\n"
+            "👉 ০ থেকে ১ এর মধ্যে সংখ্যা দিন"
+        )
+        return RISK
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return CAPITAL
+
+async def get_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """রিস্ক পার্সেন্ট ইনপুট নেওয়া"""
+    try:
+        risk = float(update.message.text)
+        if risk <= 0 or risk > 1:
+            await update.message.reply_text("❌ রিস্ক ০ থেকে ১ এর মধ্যে হতে হবে। আবার দিন:")
+            return RISK
         
-        # ভ্যালিডেশন
-        if total_capital <= 0:
-            await update.message.reply_text("❌ টোটাল ক্যাপিটাল পজিটিভ হতে হবে")
-            return
+        context.user_data['risk'] = risk
+        await update.message.reply_text(
+            f"✅ রিস্ক: {risk*100:.1f}%\n\n"
+            "এখন **বাই প্রাইস** দিন (যেমন: 30):"
+        )
+        return BUY
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return RISK
+
+async def get_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """বাই প্রাইস ইনপুট নেওয়া"""
+    try:
+        buy = float(update.message.text)
+        if buy <= 0:
+            await update.message.reply_text("❌ বাই প্রাইস পজিটিভ হতে হবে। আবার দিন:")
+            return BUY
         
-        if risk_percent <= 0 or risk_percent > 1:
-            await update.message.reply_text("❌ রিস্ক পার্সেন্ট ০ থেকে ১ এর মধ্যে হতে হবে (যেমন: 0.01 = 1%)")
-            return
+        context.user_data['buy'] = buy
+        await update.message.reply_text(
+            f"✅ বাই: {buy}\n\n"
+            "এখন **এসএল প্রাইস** দিন (যেমন: 29):"
+        )
+        return SL
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return BUY
+
+async def get_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """এসএল প্রাইস ইনপুট নেওয়া"""
+    try:
+        sl = float(update.message.text)
+        if sl <= 0:
+            await update.message.reply_text("❌ এসএল প্রাইস পজিটিভ হতে হবে। আবার দিন:")
+            return SL
         
-        # ক্যালকুলেশন
-        result = calculate_position(symbol, total_capital, risk_percent, buy_price, sl_price, tp_price)
+        if sl >= context.user_data['buy']:
+            await update.message.reply_text("❌ এসএল বাই থেকে কম হতে হবে। আবার দিন:")
+            return SL
+        
+        context.user_data['sl'] = sl
+        await update.message.reply_text(
+            f"✅ SL: {sl}\n\n"
+            "এখন **টিপি প্রাইস** দিন (যেমন: 39):"
+        )
+        return TP
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return SL
+
+async def get_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """টিপি প্রাইস ইনপুট নেওয়া"""
+    try:
+        tp = float(update.message.text)
+        if tp <= 0:
+            await update.message.reply_text("❌ টিপি প্রাইস পজিটিভ হতে হবে। আবার দিন:")
+            return TP
+        
+        if tp <= context.user_data['buy']:
+            await update.message.reply_text("❌ টিপি বাই থেকে বেশি হতে হবে। আবার দিন:")
+            return TP
+        
+        context.user_data['tp'] = tp
+        
+        # সব ডাটা নিয়ে ক্যালকুলেশন
+        result = calculate_position(
+            context.user_data['symbol'],
+            context.user_data['capital'],
+            context.user_data['risk'],
+            context.user_data['buy'],
+            context.user_data['sl'],
+            tp
+        )
         
         if "error" in result:
-            await update.message.reply_text(result["error"])
-            return
+            await update.message.reply_text(f"❌ {result['error']}")
+            return ConversationHandler.END
+        
+        context.user_data['result'] = result
+        
+        # কনফার্মেশন কার্ড দেখান
+        card_text, _ = format_signal_card(result, show_delete_button=False)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ সংরক্ষণ করুন", callback_data="confirm_save"),
+                InlineKeyboardButton("❌ বাতিল", callback_data="confirm_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"{card_text}\n\n"
+            "আপনার তথ্য যাচাই করুন। সংরক্ষণ করতে চান?",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return CONFIRM
+        
+    except ValueError:
+        await update.message.reply_text("❌ সঠিক সংখ্যা দিন। আবার চেষ্টা করুন:")
+        return TP
+
+async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """কনফার্মেশন হ্যান্ডলার"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "confirm_save":
+        result = context.user_data['result']
         
         # MongoDB-তে সংরক্ষণ
-        result['user_id'] = update.effective_user.id
-        result['username'] = update.effective_user.username or update.effective_user.first_name
+        result['user_id'] = query.from_user.id
+        result['username'] = query.from_user.username or query.from_user.first_name
         
         insert_result = collection.insert_one(result)
         result['_id'] = insert_result.inserted_id
         
-        # কার্ড দেখান (ডিলিট বাটন সহ)
+        # ফাইনাল কার্ড দেখান (ডিলিট বাটন সহ)
         card_text, keyboard = format_signal_card(result, show_delete_button=True)
-        await update.message.reply_text(card_text, reply_markup=keyboard, parse_mode='Markdown')
+        await query.edit_message_text(
+            card_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
         
-        logger.info(f"Signal saved for {symbol} by {update.effective_user.username}")
+        logger.info(f"Signal saved for {result['symbol']} by {query.from_user.username}")
         
-    except ValueError as e:
-        await update.message.reply_text("❌ ভ্যালু ঠিক নয়। দয়া করে সঠিক নাম্বার দিন।")
-        logger.error(f"ValueError: {e}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ একটি ত্রুটি হয়েছে: {str(e)}")
-        logger.error(f"Error in stock_command: {e}")
+    else:
+        await query.edit_message_text("❌ অপারেশন বাতিল করা হয়েছে।")
+    
+    # ক্লিনআপ
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """কনভারসেশন বাতিল"""
+    await update.message.reply_text(
+        "🚫 অপারেশন বাতিল করা হয়েছে।\n"
+        "/stock দিয়ে আবার শুরু করতে পারেন।"
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def ok_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """RRR বেশি এবং diff কম অনুযায়ী সাজানো সিগন্যাল দেখায়"""
@@ -193,7 +381,7 @@ async def ok_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for signal in sorted_signals:
             card_text, _ = format_signal_card(signal, show_delete_button=False)
             await update.message.reply_text(card_text, parse_mode='Markdown')
-            await asyncio.sleep(0.5)  # রেট লিমিট এড়াতে সামান্য বিরতি
+            await asyncio.sleep(0.5)
         
         # ডিলিট কনফার্মেশন বাটন
         keyboard = [
@@ -225,52 +413,6 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ একটি ত্রুটি হয়েছে: {str(e)}")
         logger.error(f"Error in clear_command: {e}")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """হেল্প কমান্ড"""
-    help_text = (
-        "📚 **Risk Reward BD Stock Bot - সাহায্য**\n\n"
-        
-        "**কমান্ড সমূহ:**\n"
-        "/start - বট শুরু করুন\n"
-        "/help - এই হেল্প মেসেজ দেখুন\n"
-        "/stock - নতুন সিগন্যাল যোগ করুন\n"
-        "/ok - সংরক্ষিত সিগন্যাল দেখুন\n"
-        "/clear - সব সিগন্যাল ডিলিট করুন\n\n"
-        
-        "**স্টক ক্যালকুলেশন ফরম্যাট:**\n"
-        "`/stock [সিম্বল] [ক্যাপিটাল] [রিস্ক%] [বাই] [এসএল] [টিপি]`\n\n"
-        
-        "**প্যারামিটার বিবরণ:**\n"
-        "• **সিম্বল:** স্টক সিম্বল (যেমন: aaa)\n"
-        "• **ক্যাপিটাল:** মোট ট্রেডিং ক্যাপিটাল (BDT)\n"
-        "• **রিস্ক%:** প্রতি ট্রেডে রিস্কের শতাংশ (যেমন: 0.01 = 1%)\n"
-        "• **বাই:** ক্রয় মূল্য\n"
-        "• **এসএল:** স্টপ লস\n"
-        "• **টিপি:** টার্গেট প্রাইস\n\n"
-        
-        "**উদাহরণ:**\n"
-        "`/stock aaa 500000 0.01 30 29 39`\n"
-        "`/stock bbc 1000000 0.02 45 43 52`\n\n"
-        
-        "**আউটপুট ফরম্যাট:**\n"
-        "📊 সিম্বল\n"
-        "💰 ক্যাপিটাল\n"
-        "⚠️ রিস্ক%\n"
-        "📈 বাই\n"
-        "📉 SL | 🎯 TP (পাশাপাশি)\n"
-        "📊 RRR | 📏 ডিফ (পাশাপাশি)\n"
-        "📦 পজিশন সাইজ\n"
-        "💵 এক্সপোজার\n"
-        "⚡ একচুয়াল রিস্ক\n\n"
-        
-        "**ফিচার:**\n"
-        "✅ সিগন্যাল MongoDB-তে সংরক্ষিত হয়\n"
-        "✅ /ok কমান্ডে RRR ও diff অনুযায়ী সাজানো দেখায়\n"
-        "✅ ইনলাইন বাটন দিয়ে ডিলিট করার সুবিধা\n"
-        "✅ ইউজার-ভিত্তিক ডাটা সেপারেশন"
-    )
-    await update.message.reply_text(help_text, parse_mode='Markdown')
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ইনলাইন বাটনের কলব্যাক হ্যান্ডলার"""
     query = update.callback_query
@@ -278,7 +420,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         if query.data == "delete_all":
-            # সব সিগন্যাল ডিলিট
             result = collection.delete_many({"user_id": query.from_user.id})
             await query.edit_message_text(f"✅ {result.deleted_count}টি সিগন্যাল ডিলিট করা হয়েছে।")
             
@@ -286,7 +427,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ ডিলিট বাতিল করা হয়েছে।")
             
         elif query.data.startswith("delete_"):
-            # নির্দিষ্ট সিগন্যাল ডিলিট
             signal_id = query.data.replace("delete_", "")
             result = collection.delete_one({"_id": ObjectId(signal_id), "user_id": query.from_user.id})
             
@@ -307,18 +447,30 @@ async def run_bot():
         # Application তৈরি
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         
+        # কনভারসেশন হ্যান্ডলার তৈরি
+        stock_conv_handler = ConversationHandler(
+            entry_points=[CommandHandler('stock', stock_start)],
+            states={
+                SYMBOL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_symbol)],
+                CAPITAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_capital)],
+                RISK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_risk)],
+                BUY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy)],
+                SL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_sl)],
+                TP: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_tp)],
+                CONFIRM: [CallbackQueryHandler(confirm_save, pattern="^(confirm_save|confirm_cancel)$")],
+            },
+            fallbacks=[CommandHandler('cancel', cancel)],
+        )
+        
         # হ্যান্ডলার যোগ
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("stock", stock_command))
+        app.add_handler(stock_conv_handler)
         app.add_handler(CommandHandler("ok", ok_command))
         app.add_handler(CommandHandler("clear", clear_command))
-        
-        # ইনলাইন বাটন হ্যান্ডলার
         app.add_handler(CallbackQueryHandler(button_callback))
         
         logger.info("✅ বট চালু হয়েছে")
-        logger.info(f"বট ইউজারনেম: @riskrewardbdstock_bot")
         
         # বট চালান
         await app.initialize()
