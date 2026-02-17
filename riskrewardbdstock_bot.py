@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -105,26 +106,46 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "উদাহরণ: /stock aaa 500000 0.01 30 29 39"
     )
 
+async def run_bot():
+    """বট চালানোর async ফাংশন"""
+    logger.info("🤖 বট চালু হচ্ছে...")
+    
+    # Application তৈরি
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # হ্যান্ডলার যোগ
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("stock", stock_command))
+    
+    logger.info("✅ বট চালু হয়েছে")
+    
+    # বট চালান - ম্যানুয়ালি initialize এবং start করুন
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    
+    # বট চলতে থাকবে (infinite loop)
+    try:
+        while True:
+            await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("🛑 বট বন্ধ হচ্ছে...")
+    finally:
+        # ক্লিনআপ
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+
 def main():
     """মেইন ফাংশন"""
     try:
-        print("🤖 বট চালু হচ্ছে...")
-        
-        # Application তৈরি
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-        
-        # হ্যান্ডলার যোগ
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("stock", stock_command))
-        
-        print("✅ বট চালু হয়েছে")
-        
-        # Polling শুরু
-        app.run_polling()
-        
+        # Python 3.7+ এর জন্য asyncio.run() ব্যবহার করুন
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        logger.info("🛑 বট বন্ধ হচ্ছে...")
     except Exception as e:
-        print(f"❌ এরর: {e}")
+        logger.error(f"❌ মেইন ত্রুটি: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
