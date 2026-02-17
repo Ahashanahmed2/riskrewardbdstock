@@ -1,9 +1,9 @@
 import logging
 import asyncio
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import json
-import os
 from datetime import datetime
 import re
 
@@ -14,8 +14,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# BotFather থেকে পাওয়া বট টোকেন
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # আপনার আসল টোকেন দিন
+# আপনার দেওয়া বট টোকেন
+BOT_TOKEN = "8597965743:AAEV7NlAKH5VJZIXgqJ8iO02GoWKJHMIafc"
 
 # ডাটা সংরক্ষণের ফাইল
 DATA_FILE = "stock_signals.json"
@@ -53,7 +53,7 @@ def parse_data_format(text):
     return None
 
 def calculate_rrr(item):
-    """RRR (রিস্ক রিওয়ার্ড রেশিও) ক্যালকুলেশন"""
+    """RRR ক্যালকুলেশন"""
     try:
         buy = item['buy']
         sl = item['sl']
@@ -72,7 +72,7 @@ def calculate_rrr(item):
         return 0
 
 def calculate_diff(item):
-    """Buy - SL (ডিফারেন্স) ক্যালকুলেশন"""
+    """Buy - SL ক্যালকুলেশন"""
     return round(item['buy'] - item['sl'], 2)
 
 def calculate_position(item):
@@ -97,7 +97,7 @@ def calculate_risk_amount(item):
     return int(round(item['capital'] * item['risk']))
 
 def format_signal(item, index=None):
-    """সিগন্যাল ফরম্যাট করা"""
+    """সিগন্যাল ফরম্যাট করা - ইউনিকোড বক্স সহ"""
     rrr = calculate_rrr(item)
     diff = calculate_diff(item)
     position = calculate_position(item)
@@ -109,25 +109,26 @@ def format_signal(item, index=None):
     else:
         header = f"📊 {item['symbol']}"
     
-    # সিম্পল টেক্সট ফরম্যাট (কোন বক্স নেই - বেশি নির্ভরযোগ্য)
-    text = f"""
-{header}
-────────────────────
-💰 ক্যাপিটাল: {item['capital']:,.0f} BDT
-⚠️ রিস্ক: {item['risk']*100}%
-────────────────────
-📈 বাই: {item['buy']}
-🛑 SL: {item['sl']}
-🎯 TP: {item['tp']}
-📊 RRR: {rrr}
-📏 ডিফ: {diff}
-────────────────────
-📦 পজিশন: {position:,} shares
-💵 এক্সপোজার: {exposure:,} BDT
-⚡ রিস্ক অ্যামাউন্ট: {risk_amount:,} BDT
-────────────────────
+    # ইউনিকোড বক্স ব্যবহার করে ফরম্যাট
+    box = f"""
+╔════════════════════════════════════╗
+║  {header:<32}║
+╠════════════════════════════════════╣
+║  💰 ক্যাপিটাল: {item['capital']:>12,.0f} BDT  ║
+║  ⚠️ রিস্ক: {item['risk']*100:>15.1f}%        ║
+╠════════════════════════════════════╣
+║  📈 বাই: {item['buy']:>8.1f}                  ║
+║  🛑 SL: {item['sl']:>9.1f}                    ║
+║  🎯 TP: {item['tp']:>9.1f}                    ║
+║  📊 RRR: {rrr:>8.1f}                          ║
+║  📏 ডিফ: {diff:>8.1f}                         ║
+╠════════════════════════════════════╣
+║  📦 পজিশন: {position:>11,} shares    ║
+║  💵 এক্সপোজার: {exposure:>9,} BDT      ║
+║  ⚡ রিস্ক: {risk_amount:>9,} BDT        ║
+╚════════════════════════════════════╝
 """
-    return text
+    return box
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start কমান্ড হ্যান্ডলার"""
@@ -135,18 +136,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = f"""হ্যালো {user.first_name}! 👋
 
-📈 **স্টক সিগন্যাল বট**
-
-**ফরম্যাট:**
-`সিম্বল ক্যাপিটাল রিস্ক বাই এসএল টিপি`
-
-**উদাহরণ:**
-`aaa 500000 0.01 30 29 39`
-
-**কমান্ড:**
-/list - সব সিগন্যাল দেখুন
-/delete - সব ডাটা মুছুন
-/help - সাহায্য দেখুন
+╔════════════════════════════╗
+║   📈 স্টক সিগন্যাল বট     ║
+╠════════════════════════════╣
+║ ফরম্যাট:                  ║
+║ সিম্বল ক্যাপিটাল রিস্ক    ║
+║ বাই এসএল টিপি            ║
+║                          ║
+║ যেমন:                    ║
+║ aaa 500000 0.01 30 29 39 ║
+║                          ║
+╠════════════════════════════╣
+║ 📋 কমান্ড:                ║
+║ /list - সব সিগন্যাল       ║
+║ /delete - সব মুছুন        ║
+║ /help - সাহায্য           ║
+╚════════════════════════════╝
 """
     
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -155,27 +160,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/help কমান্ড হ্যান্ডলার"""
     text = """📝 **ব্যবহার বিধি**
 
-**ফরম্যাট:**
-`সিম্বল ক্যাপিটাল রিস্ক বাই এসএল টিপি`
-
-**উদাহরণ:**
-`aaa 500000 0.01 30 29 39`
-
-**বিস্তারিত:**
-• সিম্বল = স্টক কোড (aaa)
-• ক্যাপিটাল = মূলধন (500000)
-• রিস্ক = রিস্ক পার্সেন্ট (0.01 = 1%)
-• বাই = কেনার দাম (30)
-• এসএল = স্টপ লস (29)
-• টিপি = টার্গেট প্রাইস (39)
+╔════════════════════════════╗
+║    ফরম্যাট ব্যাখ্যা        ║
+╠════════════════════════════╣
+║ <code>aaa 500000 0.01 30 29 39</code> ║
+║                          ║
+║ • aaa = স্টক সিম্বল      ║
+║ • 500000 = মূলধন (টাকা)  ║
+║ • 0.01 = রিস্ক (1%)      ║
+║ • 30 = বাই প্রাইস        ║
+║ • 29 = স্টপ লস (SL)     ║
+║ • 39 = টার্গেট (TP)      ║
+╚════════════════════════════╝
 
 **ক্যালকুলেশন:**
-• RRR = (TP-Buy)/(Buy-SL)
-• পজিশন = (ক্যাপিটাল × রিস্ক)/(Buy-SL)
+• RRR = (TP - Buy) / (Buy - SL)
+• পজিশন = (ক্যাপিটাল × রিস্ক) / (Buy - SL)
 • এক্সপোজার = পজিশন × Buy
 """
     
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(text, parse_mode='HTML')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ইনকামিং মেসেজ হ্যান্ডলার"""
@@ -193,10 +197,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         all_data[user_id].append(data_item)
         save_data(all_data)
         
-        signal_text = format_signal(data_item)
+        signal_box = format_signal(data_item)
         
         await update.message.reply_text(
-            f"✅ সিগন্যাল সংরক্ষিত!\n{signal_text}",
+            f"✅ **সিগন্যাল সংরক্ষিত!**\n{signal_box}",
             parse_mode='Markdown'
         )
     else:
@@ -235,7 +239,7 @@ async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     for i, item in enumerate(sorted_data, 1):
-        signal_text = format_signal(item, i)
+        signal_box = format_signal(item, i)
         
         keyboard = [[
             InlineKeyboardButton(f"🗑 মুছুন #{i}", callback_data=f"delete_{i-1}"),
@@ -245,7 +249,7 @@ async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            signal_text,
+            signal_box,
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
@@ -324,45 +328,52 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     """মেইন ফাংশন"""
-    # অ্যাপ্লিকেশন তৈরি
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    # কমান্ড হ্যান্ডলার
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("list", list_data))
-    application.add_handler(CommandHandler("delete", delete_all))
+    logger.info("🤖 বট চালু হচ্ছে...")
+    logger.info(f"বট টোকেন: {BOT_TOKEN[:10]}...")
     
-    # মেসেজ হ্যান্ডলার
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # কলব্যাক হ্যান্ডলার
-    application.add_handler(CallbackQueryHandler(button_callback))
-
-    print("🤖 বট চালু হচ্ছে...")
-    print("📱 আপনার বট চালু হয়েছে!")
-    
-    # সঠিকভাবে বট চালু করা
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    
-    # বট চালু রাখা
     try:
+        # অ্যাপ্লিকেশন তৈরি
+        application = Application.builder().token(BOT_TOKEN).build()
+
+        # কমান্ড হ্যান্ডলার
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("list", list_data))
+        application.add_handler(CommandHandler("delete", delete_all))
+        
+        # মেসেজ হ্যান্ডলার
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # কলব্যাক হ্যান্ডলার
+        application.add_handler(CallbackQueryHandler(button_callback))
+
+        logger.info("✅ বট সফলভাবে চালু হয়েছে!")
+        logger.info("📱 আপনার বট এখন অ্যাকটিভ: @riskrewardbd_bot")
+        
+        # বট চালু করা
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        
+        # বট চালু রাখা
         while True:
             await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        print("\n🛑 বট বন্ধ হচ্ছে...")
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
+            
+    except Exception as e:
+        logger.error(f"❌ বট চালু করতে সমস্যা: {e}")
+        
+    finally:
+        logger.info("🛑 বট বন্ধ হচ্ছে...")
 
 if __name__ == '__main__':
     try:
-        # Python 3.7+ এর জন্য সঠিক পদ্ধতি
         asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 ইউজার বট বন্ধ করেছেন।")
     except RuntimeError:
-        # Python 3.14 এর জন্য বিকল্প পদ্ধতি
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(main())
+        try:
+            loop.run_until_complete(main())
+        except KeyboardInterrupt:
+            logger.info("🛑 ইউজার বট বন্ধ করেছেন।")
