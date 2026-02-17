@@ -15,8 +15,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 🔴 আপনার বট টোকেন এখানে সেট করুন
-TELEGRAM_TOKEN = "8597965743:AAEV7NlAKH5VJZIXgqJ8iO02GoWKJHMIafc"
+# Environment Variables থেকে টোকেন নিন
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+
+if not TELEGRAM_TOKEN:
+    logger.error("❌ TELEGRAM_TOKEN environment variable সেট করা হয়নি!")
+    sys.exit(1)
 
 def calculate_position(symbol, total_capital, risk_percent, buy_price, sl_price, tp_price):
     """
@@ -92,13 +96,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stock [সিম্বল] [টোটাল_ক্যাপিটাল] [রিস্ক_পার্সেন্ট] [বাই] [এসএল] [টিপি]\n"
         "/help - সাহায্য দেখুন\n\n"
         "📝 **উদাহরণ:**\n"
-        "`/stock aaa 500000 0.01 30 29 39`\n\n"
-        "আমি ক্যালকুলেট করব:\n"
-        "✅ পজিশন সাইজ\n"
-        "✅ এক্সপোজার\n"
-        "✅ একচুয়াল রিস্ক\n"
-        "✅ RRR\n"
-        "✅ ডিফারেন্স"
+        "`/stock aaa 500000 0.01 30 29 39`"
     )
 
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -212,44 +210,40 @@ async def run_bot():
     try:
         logger.info("🤖 Risk Reward BD Stock Bot চালু হচ্ছে...")
         
-        # Application তৈরি
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        # Application তৈরি (সিম্পল ভার্সন)
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
         
         # হ্যান্ডলার যোগ করুন
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("stock", stock_command))
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("stock", stock_command))
         
         logger.info("✅ বট চালু হয়েছে")
         logger.info("🤖 বট ইউজারনেম: @riskrewardbdstock_bot")
         
-        # বট চালান
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
+        # বট চালান (Polling দিয়ে)
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
         
-        # বট চলতে থাকবে
+        # বট চলতে থাকবে (ইনফিনিট লুপ)
         while True:
             await asyncio.sleep(1)
             
     except Exception as e:
         logger.error(f"❌ বট চালু ত্রুটি: {e}", exc_info=True)
         raise
+    finally:
+        # ক্লিনআপ
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
 
 def main():
-    """মেইন ফাংশন - Event Loop সেটআপ"""
+    """মেইন ফাংশন - সিম্পল ইভেন্ট লুপ"""
     try:
-        # Python 3.14+ এর জন্য Event Loop সেটআপ
-        if sys.version_info >= (3, 14):
-            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-        
-        # Event Loop তৈরি
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # বট চালান
-        loop.run_until_complete(run_bot())
-        loop.run_forever()
+        # Python 3.10+ এর জন্য সিম্পল ইভেন্ট লুপ
+        asyncio.run(run_bot())
         
     except KeyboardInterrupt:
         logger.info("🛑 বট বন্ধ হচ্ছে...")
