@@ -97,7 +97,7 @@ def calculate_risk_amount(item):
     return int(round(item['capital'] * item['risk']))
 
 def format_signal(item, index=None):
-    """সিগন্যাল ফরম্যাট করা - ইউনিকোড বক্স সহ"""
+    """সিগন্যাল ফরম্যাট করা"""
     rrr = calculate_rrr(item)
     diff = calculate_diff(item)
     position = calculate_position(item)
@@ -109,7 +109,6 @@ def format_signal(item, index=None):
     else:
         header = f"📊 {item['symbol']}"
     
-    # ইউনিকোড বক্স ব্যবহার করে ফরম্যাট
     box = f"""
 ╔════════════════════════════════════╗
 ║  {header:<32}║
@@ -130,6 +129,52 @@ def format_signal(item, index=None):
 """
     return box
 
+def create_table_view(data_list):
+    """টেবুলার ভিউ তৈরি করা - row ও column আকারে"""
+    if not data_list:
+        return "📭 কোন ডাটা নেই।"
+    
+    # হেডার তৈরি
+    table = "```\n"
+    table += "=" * 80 + "\n"
+    table += f"{'#':<3} {'Symbol':<8} {'Capital':>12} {'Risk%':>6} {'Buy':>6} {'SL':>6} {'TP':>6} {'RRR':>6} {'Diff':>6} {'Position':>10}\n"
+    table += "=" * 80 + "\n"
+    
+    # প্রতিটি এন্ট্রি যোগ করা
+    for i, item in enumerate(data_list, 1):
+        rrr = calculate_rrr(item)
+        diff = calculate_diff(item)
+        position = calculate_position(item)
+        
+        table += f"{i:<3} {item['symbol']:<8} {item['capital']:>12,.0f} {item['risk']*100:>5.1f}% {item['buy']:>6.1f} {item['sl']:>6.1f} {item['tp']:>6.1f} {rrr:>6.1f} {diff:>6.1f} {position:>10,}\n"
+    
+    table += "=" * 80 + "\n"
+    table += "```"
+    
+    return table
+
+def create_compact_table(data_list):
+    """কম্প্যাক্ট টেবিল ভিউ (ছোট)"""
+    if not data_list:
+        return "📭 কোন ডাটা নেই।"
+    
+    # হেডার
+    table = "```\n"
+    table += "=" * 60 + "\n"
+    table += f"{'#':<3} {'Symbol':<6} {'RRR':>5} {'Buy':>5} {'SL':>5} {'TP':>5} {'Diff':>5}\n"
+    table += "=" * 60 + "\n"
+    
+    # ডাটা
+    for i, item in enumerate(data_list, 1):
+        rrr = calculate_rrr(item)
+        diff = calculate_diff(item)
+        table += f"{i:<3} {item['symbol']:<6} {rrr:>5.1f} {item['buy']:>5.1f} {item['sl']:>5.1f} {item['tp']:>5.1f} {diff:>5.1f}\n"
+    
+    table += "=" * 60 + "\n"
+    table += "```"
+    
+    return table
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start কমান্ড হ্যান্ডলার"""
     user = update.effective_user
@@ -148,7 +193,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ║                          ║
 ╠════════════════════════════╣
 ║ 📋 কমান্ড:                ║
-║ /list - সব সিগন্যাল       ║
+║ /list - সব সিগন্যাল (টেবিল)║
+║ /listall - বিস্তারিত তালিকা║
 ║ /delete - সব মুছুন        ║
 ║ /help - সাহায্য           ║
 ╚════════════════════════════╝
@@ -177,6 +223,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • RRR = (TP - Buy) / (Buy - SL)
 • পজিশন = (ক্যাপিটাল × রিস্ক) / (Buy - SL)
 • এক্সপোজার = পজিশন × Buy
+
+**কমান্ড:**
+• /list - কম্প্যাক্ট টেবিল ভিউ
+• /listall - বিস্তারিত টেবিল
+• /delete - সব ডাটা মুছুন
 """
     
     await update.message.reply_text(text, parse_mode='HTML')
@@ -219,7 +270,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """সব ডাটা তালিকা দেখানো"""
+    """কম্প্যাক্ট টেবিল ভিউ দেখানো"""
     user_id = str(update.effective_user.id)
     all_data = load_data()
     
@@ -227,32 +278,57 @@ async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
         return
     
+    # RRR অনুযায়ী সাজানো
     sorted_data = sorted(
         all_data[user_id], 
         key=lambda x: calculate_rrr(x), 
         reverse=True
     )
     
+    # কম্প্যাক্ট টেবিল তৈরি
+    table = create_compact_table(sorted_data)
+    
+    # মেসেজ পাঠানো
     await update.message.reply_text(
-        "📋 **আপনার সিগন্যাল (RRR বেশি আগে):**",
+        f"📋 **কম্প্যাক্ট ভিউ (RRR বেশি আগে):**\n\n{table}",
         parse_mode='Markdown'
     )
     
-    for i, item in enumerate(sorted_data, 1):
-        signal_box = format_signal(item, i)
-        
-        keyboard = [[
-            InlineKeyboardButton(f"🗑 মুছুন #{i}", callback_data=f"delete_{i-1}"),
-            InlineKeyboardButton(f"✏️ সম্পাদনা #{i}", callback_data=f"edit_{i-1}")
-        ]]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            signal_box,
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
+    # বিস্তারিত দেখার বাটন
+    keyboard = [[
+        InlineKeyboardButton("📊 বিস্তারিত দেখুন", callback_data="show_detailed")
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "বিস্তারিত তথ্যের জন্য নিচের বাটনে ক্লিক করুন:",
+        reply_markup=reply_markup
+    )
+
+async def list_all_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """বিস্তারিত টেবিল ভিউ দেখানো"""
+    user_id = str(update.effective_user.id)
+    all_data = load_data()
+    
+    if user_id not in all_data or not all_data[user_id]:
+        await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
+        return
+    
+    # RRR অনুযায়ী সাজানো
+    sorted_data = sorted(
+        all_data[user_id], 
+        key=lambda x: calculate_rrr(x), 
+        reverse=True
+    )
+    
+    # বিস্তারিত টেবিল তৈরি
+    table = create_table_view(sorted_data)
+    
+    # মেসেজ পাঠানো
+    await update.message.reply_text(
+        f"📋 **বিস্তারিত ভিউ (RRR বেশি আগে):**\n\n{table}",
+        parse_mode='Markdown'
+    )
 
 async def delete_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """সব ইউজার ডাটা মুছে ফেলা"""
@@ -278,6 +354,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📭 কোনো ডাটা পাওয়া যায়নি।")
         return
     
+    if query.data == "show_detailed":
+        # বিস্তারিত টেবিল দেখানো
+        sorted_data = sorted(
+            all_data[user_id], 
+            key=lambda x: calculate_rrr(x), 
+            reverse=True
+        )
+        
+        table = create_table_view(sorted_data)
+        
+        await query.edit_message_text(
+            f"📋 **বিস্তারিত ভিউ:**\n\n{table}",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # অন্যান্য কলব্যাক হ্যান্ডলিং
     callback_data = query.data
     action, index_str = callback_data.split('_')
     index = int(index_str)
@@ -339,6 +432,7 @@ async def main():
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("list", list_data))
+        application.add_handler(CommandHandler("listall", list_all_data))
         application.add_handler(CommandHandler("delete", delete_all))
         
         # মেসেজ হ্যান্ডলার
