@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 import re
 import csv
-from io import StringIO
+import io
 
 # লগিং সক্রিয় করা
 logging.basicConfig(
@@ -334,6 +334,34 @@ async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
+async def list_all_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """বিস্তারিত টেবিল ভিউ দেখানো"""
+    user_id = str(update.effective_user.id)
+    all_data = load_data()
+    
+    if user_id not in all_data or not all_data[user_id]:
+        await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
+        return
+    
+    # RRR অনুযায়ী সাজানো
+    sorted_data = sorted(
+        all_data[user_id], 
+        key=lambda x: calculate_rrr(x), 
+        reverse=True
+    )
+    
+    # বিস্তারিত টেবিল তৈরি
+    table = create_table_view(sorted_data)
+    
+    keyboard = [[InlineKeyboardButton("🔙 কম্প্যাক্ট ভিউ", callback_data="menu_list")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"📊 **বিস্তারিত ভিউ:**\n\n{table}",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """পরিসংখ্যান দেখানো"""
     user_id = str(update.effective_user.id)
@@ -377,7 +405,6 @@ async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # CSV ফাইল তৈরি
-    import io
     output = io.StringIO()
     writer = csv.writer(output)
     
@@ -408,6 +435,18 @@ async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename=f"signals_{datetime.now().strftime('%Y%m%d')}.csv",
         caption="📥 আপনার সিগন্যাল এক্সপোর্ট করা হলো"
     )
+
+async def delete_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """সব ইউজার ডাটা মুছে ফেলা"""
+    user_id = str(update.effective_user.id)
+    all_data = load_data()
+    
+    if user_id in all_data:
+        del all_data[user_id]
+        save_data(all_data)
+        await update.message.reply_text("✅ সব ডাটা মুছে ফেলা হয়েছে।")
+    else:
+        await update.message.reply_text('📭 আপনার মুছে ফেলার মতো কোনো ডাটা নেই।')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """বাটন ক্লিক হ্যান্ডলার"""
@@ -501,7 +540,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [
                 InlineKeyboardButton("📥 CSV ফাইল", callback_data="export_csv"),
-                InlineKeyboardButton("📋 টেক্সট", callback_data="export_text")
             ],
             [InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")]
         ]
@@ -515,12 +553,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     elif query.data == "export_csv":
-        # CSV এক্সপোর্ট (এখানে ডকুমেন্ট পাঠাতে হবে, মেসেজ এডিট করা যাবে না)
         await query.edit_message_text("📥 CSV ফাইল তৈরি হচ্ছে... এক মুহূর্ত অপেক্ষা করুন।")
         
-        # নতুন মেসেজ হিসেবে CSV পাঠানো
         if user_id in all_data and all_data[user_id]:
-            import io
             output = io.StringIO()
             writer = csv.writer(output)
             
@@ -551,7 +586,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     elif query.data == "menu_help":
-        await help_command(update, context)
+        keyboard = [
+            [
+                InlineKeyboardButton("📋 ফরম্যাট", callback_data="help_format"),
+                InlineKeyboardButton("📊 ক্যালকুলেশন", callback_data="help_calc")
+            ],
+            [
+                InlineKeyboardButton("🎯 কমান্ড", callback_data="help_commands"),
+                InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📝 **সাহায্য ও নির্দেশিকা**\n\nনিচের বিষয়গুলো সম্পর্কে জানতে বাটনে ক্লিক করুন:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
         return
     
     elif query.data == "menu_delete_all":
