@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import logging
+import atexit
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, 
@@ -17,6 +18,7 @@ from datetime import datetime
 import certifi
 from bson.objectid import ObjectId
 import re
+import time
 
 # লগিং সেটআপ
 logging.basicConfig(
@@ -24,6 +26,41 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# PID ফাইল চেক করার জন্য
+PID_FILE = '/tmp/stock_bot.pid'
+
+def check_single_instance():
+    """নিশ্চিত করে যে শুধু একটি instance চলছে"""
+    try:
+        if os.path.exists(PID_FILE):
+            with open(PID_FILE, 'r') as f:
+                old_pid = f.read().strip()
+                if old_pid:
+                    try:
+                        # পুরনো প্রসেস kill করুন
+                        os.kill(int(old_pid), 0)
+                        logger.warning(f"পুরনো instance চলছে (PID: {old_pid})")
+                        os.kill(int(old_pid), 9)
+                        time.sleep(2)
+                    except:
+                        pass
+        
+        # নতুন PID ফাইল তৈরি
+        with open(PID_FILE, 'w') as f:
+            f.write(str(os.getpid()))
+            
+        # বন্ধ করার সময় PID ফাইল ডিলিট
+        def remove_pid():
+            if os.path.exists(PID_FILE):
+                os.remove(PID_FILE)
+        
+        atexit.register(remove_pid)
+        return True
+        
+    except Exception as e:
+        logger.error(f"PID ফাইল এরর: {e}")
+        return True  # এরর হলেও চলতে দিন
 
 # Conversation states
 WAITING_FOR_FORM, CONFIRMATION = range(2)
@@ -136,25 +173,25 @@ def create_form_template():
         "║                                              ║\n"
         "╠══════════════════════════════════════════════╣\n"
         "║                                              ║\n"
-        "║  একসাথে সব তথ্য দিন নিচের ফরম্যাটে:          ║\n"
+        "║  একসাথে সব তথ্য দিন স্পেস দিয়ে:             ║\n"
         "║                                              ║\n"
-        "║  সিম্বল, ক্যাপিটাল, রিস্ক%, বাই, এসএল, টিপি  ║\n"
+        "║  সিম্বল ক্যাপিটাল রিস্ক% বাই এসএল টিপি       ║\n"
         "║                                              ║\n"
         "║  📝 উদাহরণ:                                 ║\n"
-        "║  aaa, 500000, 0.01, 30, 29, 39              ║\n"
+        "║  aaa 500000 0.01 30 29 39                    ║\n"
         "║                                              ║\n"
         "╚══════════════════════════════════════════════╝"
     )
     return form
 
 def parse_form_input(text):
-    """ইউজারের ইনপুট পার্স করে"""
+    """ইউজারের ইনপুট পার্স করে (স্পেস সেপারেটেড)"""
     try:
-        # কমা দিয়ে আলাদা করা
-        parts = [part.strip() for part in text.split(',')]
+        # স্পেস দিয়ে আলাদা করা
+        parts = text.strip().split()
         
         if len(parts) != 6:
-            return None, "❌ ৬টি মান দিন (কমা দিয়ে আলাদা করে)"
+            return None, "❌ ৬টি মান দিন (স্পেস দিয়ে আলাদা করে)"
         
         symbol = parts[0].upper()
         
@@ -250,7 +287,8 @@ async def show_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(
         f"{form_template}\n\n"
-        "👉 একসাথে সব তথ্য কমা দিয়ে লিখুন:",
+        "👉 একসাথে সব তথ্য স্পেস দিয়ে লিখুন:\n"
+        "উদাহরণ: aaa 500000 0.01 30 29 39",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -267,6 +305,8 @@ async def handle_form_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]]
         await update.message.reply_text(
             f"{error}\n\n"
+            "সঠিক ফরম্যাট: সিম্বল ক্যাপিটাল রিস্ক% বাই এসএল টিপি\n"
+            "উদাহরণ: aaa 500000 0.01 30 29 39\n\n"
             "আবার চেষ্টা করুন অথবা মেনুতে ফিরুন:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -434,6 +474,9 @@ async def run_bot():
     try:
         logger.info("🤖 Risk Reward BD Stock Bot চালু হচ্ছে...")
         
+        # সিঙ্গেল instance চেক
+        check_single_instance()
+        
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         
         # ফর্ম কনভারসেশন হ্যান্ডলার
@@ -461,16 +504,21 @@ async def run_bot():
         
         logger.info("✅ বট চালু হয়েছে")
         
+        # বট চালান
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        await app.updater.start_polling(drop_pending_updates=True)
         
+        logger.info("✅ Polling শুরু হয়েছে")
+        
+        # বট চলতে থাকবে
         try:
             while True:
                 await asyncio.sleep(1)
         except KeyboardInterrupt:
             logger.info("🛑 বট বন্ধ হচ্ছে...")
         finally:
+            logger.info("🧹 ক্লিনআপ হচ্ছে...")
             await app.updater.stop()
             await app.stop()
             await app.shutdown()
