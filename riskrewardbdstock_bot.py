@@ -1,8 +1,712 @@
-start - বট শুরু করুন
-help - সাহায্য দেখুন
-list - কম্প্যাক্ট ভিউ দেখুন
-listall - বিস্তারিত ভিউ দেখুন
-delete - সব ডাটা মুছুন
-stats - পরিসংখ্যান দেখুন
-export - ডাটা এক্সপোর্ট করুন
-alerts - অ্যালার্ট সেটআপ
+import logging
+import asyncio
+import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+import json
+from datetime import datetime
+import re
+import csv
+from io import StringIO
+
+# লগিং সক্রিয় করা
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# আপনার দেওয়া বট টোকেন
+BOT_TOKEN = "8597965743:AAEV7NlAKH5VJZIXgqJ8iO02GoWKJHMIafc"
+
+# ডাটা সংরক্ষণের ফাইল
+DATA_FILE = "stock_signals.json"
+
+def load_data():
+    """JSON ফাইল থেকে ডাটা লোড করা"""
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_data(data):
+    """JSON ফাইলে ডাটা সংরক্ষণ করা"""
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def parse_data_format(text):
+    """ডাটা ফরম্যাট পার্স করা: aaa 500000 0.01 30 29 39"""
+    pattern = r'^([a-zA-Z0-9]+)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$'
+    match = re.match(pattern, text.strip())
+    
+    if match:
+        return {
+            'symbol': match.group(1).upper(),
+            'capital': float(match.group(2)),
+            'risk': float(match.group(3)),
+            'buy': float(match.group(4)),
+            'sl': float(match.group(5)),
+            'tp': float(match.group(6)),
+            'timestamp': datetime.now().isoformat()
+        }
+    return None
+
+def calculate_rrr(item):
+    """RRR ক্যালকুলেশন"""
+    try:
+        buy = item['buy']
+        sl = item['sl']
+        tp = item['tp']
+        
+        risk = buy - sl
+        reward = tp - buy
+        
+        if risk > 0:
+            rrr = reward / risk
+        else:
+            rrr = 0
+            
+        return round(rrr, 2)
+    except:
+        return 0
+
+def calculate_diff(item):
+    """Buy - SL ক্যালকুলেশন"""
+    return round(item['buy'] - item['sl'], 2)
+
+def calculate_position(item):
+    """পজিশন সাইজ ক্যালকুলেশন"""
+    try:
+        risk_amount = item['capital'] * item['risk']
+        diff = item['buy'] - item['sl']
+        if diff > 0:
+            position = risk_amount / diff
+            return int(round(position))
+        return 0
+    except:
+        return 0
+
+def calculate_exposure(item):
+    """এক্সপোজার ক্যালকুলেশন"""
+    position = calculate_position(item)
+    return int(round(position * item['buy']))
+
+def calculate_risk_amount(item):
+    """রিস্ক অ্যামাউন্ট ক্যালকুলেশন"""
+    return int(round(item['capital'] * item['risk']))
+
+def format_signal(item, index=None):
+    """সিগন্যাল ফরম্যাট করা"""
+    rrr = calculate_rrr(item)
+    diff = calculate_diff(item)
+    position = calculate_position(item)
+    exposure = calculate_exposure(item)
+    risk_amount = calculate_risk_amount(item)
+    
+    if index is not None:
+        header = f"🔴 #{index} {item['symbol']}"
+    else:
+        header = f"📊 {item['symbol']}"
+    
+    box = f"""
+╔════════════════════════════════════╗
+║  {header:<32}║
+╠════════════════════════════════════╣
+║  💰 ক্যাপিটাল: {item['capital']:>12,.0f} BDT  ║
+║  ⚠️ রিস্ক: {item['risk']*100:>15.1f}%        ║
+╠════════════════════════════════════╣
+║  📈 বাই: {item['buy']:>8.1f}                  ║
+║  🛑 SL: {item['sl']:>9.1f}                    ║
+║  🎯 TP: {item['tp']:>9.1f}                    ║
+║  📊 RRR: {rrr:>8.1f}                          ║
+║  📏 ডিফ: {diff:>8.1f}                         ║
+╠════════════════════════════════════╣
+║  📦 পজিশন: {position:>11,} shares    ║
+║  💵 এক্সপোজার: {exposure:>9,} BDT      ║
+║  ⚡ রিস্ক: {risk_amount:>9,} BDT        ║
+╚════════════════════════════════════╝
+"""
+    return box
+
+def create_table_view(data_list):
+    """বিস্তারিত টেবিল ভিউ"""
+    if not data_list:
+        return "📭 কোন ডাটা নেই।"
+    
+    table = "```\n"
+    table += "=" * 100 + "\n"
+    table += f"{'#':<3} {'Symbol':<8} {'Capital':>12} {'Risk%':>6} {'Buy':>6} {'SL':>6} {'TP':>6} {'RRR':>6} {'Diff':>6} {'Position':>10} {'Exposure':>12}\n"
+    table += "=" * 100 + "\n"
+    
+    for i, item in enumerate(data_list, 1):
+        rrr = calculate_rrr(item)
+        diff = calculate_diff(item)
+        position = calculate_position(item)
+        exposure = calculate_exposure(item)
+        
+        table += f"{i:<3} {item['symbol']:<8} {item['capital']:>12,.0f} {item['risk']*100:>5.1f}% {item['buy']:>6.1f} {item['sl']:>6.1f} {item['tp']:>6.1f} {rrr:>6.1f} {diff:>6.1f} {position:>10,} {exposure:>12,}\n"
+    
+    table += "=" * 100 + "\n"
+    table += "```"
+    
+    return table
+
+def create_compact_table(data_list):
+    """কম্প্যাক্ট টেবিল ভিউ"""
+    if not data_list:
+        return "📭 কোন ডাটা নেই।"
+    
+    table = "```\n"
+    table += "=" * 60 + "\n"
+    table += f"{'#':<3} {'Symbol':<6} {'RRR':>5} {'Buy':>5} {'SL':>5} {'TP':>5} {'Diff':>5}\n"
+    table += "=" * 60 + "\n"
+    
+    for i, item in enumerate(data_list, 1):
+        rrr = calculate_rrr(item)
+        diff = calculate_diff(item)
+        table += f"{i:<3} {item['symbol']:<6} {rrr:>5.1f} {item['buy']:>5.1f} {item['sl']:>5.1f} {item['tp']:>5.1f} {diff:>5.1f}\n"
+    
+    table += "=" * 60 + "\n"
+    table += "```"
+    
+    return table
+
+def get_statistics(data_list):
+    """পরিসংখ্যান বের করা"""
+    if not data_list:
+        return None
+    
+    total_signals = len(data_list)
+    total_capital = sum(item['capital'] for item in data_list)
+    total_risk = sum(item['capital'] * item['risk'] for item in data_list)
+    avg_rrr = sum(calculate_rrr(item) for item in data_list) / total_signals
+    
+    # সিম্বল অনুযায়ী গ্রুপিং
+    symbols = {}
+    for item in data_list:
+        sym = item['symbol']
+        if sym not in symbols:
+            symbols[sym] = {'count': 0, 'total_capital': 0}
+        symbols[sym]['count'] += 1
+        symbols[sym]['total_capital'] += item['capital']
+    
+    return {
+        'total_signals': total_signals,
+        'total_capital': total_capital,
+        'total_risk': total_risk,
+        'avg_rrr': avg_rrr,
+        'symbols': symbols
+    }
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/start কমান্ড হ্যান্ডলার"""
+    user = update.effective_user
+    
+    # মূল মেনুর বাটন
+    keyboard = [
+        [
+            InlineKeyboardButton("📋 লিস্ট দেখুন", callback_data="menu_list"),
+            InlineKeyboardButton("📊 পরিসংখ্যান", callback_data="menu_stats")
+        ],
+        [
+            InlineKeyboardButton("📥 এক্সপোর্ট", callback_data="menu_export"),
+            InlineKeyboardButton("❓ সাহায্য", callback_data="menu_help")
+        ],
+        [
+            InlineKeyboardButton("🗑 সব মুছুন", callback_data="menu_delete_all")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    text = f"""হ্যালো {user.first_name}! 👋
+
+╔════════════════════════════╗
+║   📈 স্টক সিগন্যাল বট     ║
+╠════════════════════════════╣
+║ ফরম্যাট:                  ║
+║ সিম্বল ক্যাপিটাল রিস্ক    ║
+║ বাই এসএল টিপি            ║
+║                          ║
+║ যেমন:                    ║
+║ aaa 500000 0.01 30 29 39 ║
+╚════════════════════════════╝
+
+নিচের বাটন ব্যবহার করুন:"""
+    
+    await update.message.reply_text(text, reply_markup=reply_markup)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/help কমান্ড হ্যান্ডলার"""
+    keyboard = [
+        [
+            InlineKeyboardButton("📋 ফরম্যাট", callback_data="help_format"),
+            InlineKeyboardButton("📊 ক্যালকুলেশন", callback_data="help_calc")
+        ],
+        [
+            InlineKeyboardButton("🎯 কমান্ড", callback_data="help_commands"),
+            InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    text = """📝 **সাহায্য ও নির্দেশিকা**
+
+নিচের বিষয়গুলো সম্পর্কে জানতে বাটনে ক্লিক করুন:"""
+    
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ইনকামিং মেসেজ হ্যান্ডলার"""
+    user_id = str(update.effective_user.id)
+    text = update.message.text.strip()
+    
+    data_item = parse_data_format(text)
+    
+    if data_item:
+        all_data = load_data()
+        
+        if user_id not in all_data:
+            all_data[user_id] = []
+        
+        all_data[user_id].append(data_item)
+        save_data(all_data)
+        
+        signal_box = format_signal(data_item)
+        
+        # অ্যাকশন বাটন
+        keyboard = [[
+            InlineKeyboardButton("📋 সব লিস্ট", callback_data="menu_list"),
+            InlineKeyboardButton("➕ আরো যোগ", callback_data="add_more")
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"✅ **সিগন্যাল সংরক্ষিত!**\n{signal_box}",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            """❌ **ভুল ফরম্যাট!**
+
+সঠিক ফরম্যাট:
+`aaa 500000 0.01 30 29 39`
+
+সাহায্যের জন্য /help ব্যবহার করুন""",
+            parse_mode='Markdown'
+        )
+
+async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """কম্প্যাক্ট টেবিল ভিউ"""
+    user_id = str(update.effective_user.id)
+    all_data = load_data()
+    
+    if user_id not in all_data or not all_data[user_id]:
+        await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
+        return
+    
+    sorted_data = sorted(
+        all_data[user_id], 
+        key=lambda x: calculate_rrr(x), 
+        reverse=True
+    )
+    
+    table = create_compact_table(sorted_data)
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 বিস্তারিত", callback_data="show_detailed"),
+            InlineKeyboardButton("📥 এক্সপোর্ট", callback_data="menu_export")
+        ],
+        [
+            InlineKeyboardButton("📈 পরিসংখ্যান", callback_data="menu_stats"),
+            InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"📋 **কম্প্যাক্ট ভিউ (RRR বেশি আগে):**\n\n{table}",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """পরিসংখ্যান দেখানো"""
+    user_id = str(update.effective_user.id)
+    all_data = load_data()
+    
+    if user_id not in all_data or not all_data[user_id]:
+        await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
+        return
+    
+    stats = get_statistics(all_data[user_id])
+    
+    text = f"""📊 **আপনার পরিসংখ্যান**
+
+╔════════════════════════════╗
+║ মোট সিগন্যাল: {stats['total_signals']:<14} ║
+║ মোট ক্যাপিটাল: {stats['total_capital']:,.0f} BDT   ║
+║ মোট রিস্ক: {stats['total_risk']:,.0f} BDT      ║
+║ গড় RRR: {stats['avg_rrr']:.2f}                   ║
+╚════════════════════════════╝
+
+**সিম্বল অনুযায়ী:**
+"""
+    
+    for sym, data in stats['symbols'].items():
+        text += f"• {sym}: {data['count']} টি (টোটাল {data['total_capital']:,.0f} BDT)\n"
+    
+    keyboard = [[
+        InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(text, reply_markup=reply_markup)
+
+async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ডাটা CSV ফরম্যাটে এক্সপোর্ট"""
+    user_id = str(update.effective_user.id)
+    all_data = load_data()
+    
+    if user_id not in all_data or not all_data[user_id]:
+        await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
+        return
+    
+    # CSV ফাইল তৈরি
+    import io
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # হেডার
+    writer.writerow(['Symbol', 'Capital', 'Risk%', 'Buy', 'SL', 'TP', 'RRR', 'Position', 'Exposure', 'Timestamp'])
+    
+    # ডাটা
+    for item in all_data[user_id]:
+        writer.writerow([
+            item['symbol'],
+            item['capital'],
+            item['risk']*100,
+            item['buy'],
+            item['sl'],
+            item['tp'],
+            calculate_rrr(item),
+            calculate_position(item),
+            calculate_exposure(item),
+            item['timestamp'][:10]
+        ])
+    
+    csv_data = output.getvalue()
+    output.close()
+    
+    # ফাইল হিসেবে পাঠানো
+    await update.message.reply_document(
+        document=io.BytesIO(csv_data.encode()),
+        filename=f"signals_{datetime.now().strftime('%Y%m%d')}.csv",
+        caption="📥 আপনার সিগন্যাল এক্সপোর্ট করা হলো"
+    )
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """বাটন ক্লিক হ্যান্ডলার"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(query.from_user.id)
+    all_data = load_data()
+    
+    # মেনু হ্যান্ডলিং
+    if query.data == "back_to_main":
+        keyboard = [
+            [
+                InlineKeyboardButton("📋 লিস্ট দেখুন", callback_data="menu_list"),
+                InlineKeyboardButton("📊 পরিসংখ্যান", callback_data="menu_stats")
+            ],
+            [
+                InlineKeyboardButton("📥 এক্সপোর্ট", callback_data="menu_export"),
+                InlineKeyboardButton("❓ সাহায্য", callback_data="menu_help")
+            ],
+            [
+                InlineKeyboardButton("🗑 সব মুছুন", callback_data="menu_delete_all")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "🔙 **মূল মেনুতে ফিরে আসুন**\n\nনিচের বাটন ব্যবহার করুন:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        return
+    
+    elif query.data == "menu_list":
+        if user_id not in all_data or not all_data[user_id]:
+            await query.edit_message_text("📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।")
+            return
+        
+        sorted_data = sorted(
+            all_data[user_id], 
+            key=lambda x: calculate_rrr(x), 
+            reverse=True
+        )
+        
+        table = create_compact_table(sorted_data)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📊 বিস্তারিত", callback_data="show_detailed"),
+                InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"📋 **কম্প্যাক্ট ভিউ:**\n\n{table}",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        return
+    
+    elif query.data == "menu_stats":
+        if user_id not in all_data or not all_data[user_id]:
+            await query.edit_message_text("📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।")
+            return
+        
+        stats = get_statistics(all_data[user_id])
+        
+        text = f"""📊 **আপনার পরিসংখ্যান**
+
+╔════════════════════════════╗
+║ মোট সিগন্যাল: {stats['total_signals']:<14} ║
+║ মোট ক্যাপিটাল: {stats['total_capital']:,.0f} BDT   ║
+║ মোট রিস্ক: {stats['total_risk']:,.0f} BDT      ║
+║ গড় RRR: {stats['avg_rrr']:.2f}                   ║
+╚════════════════════════════╝
+
+**সিম্বল অনুযায়ী:**\n"""
+        
+        for sym, data in stats['symbols'].items():
+            text += f"• {sym}: {data['count']} টি (টোটাল {data['total_capital']:,.0f} BDT)\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, reply_markup=reply_markup)
+        return
+    
+    elif query.data == "menu_export":
+        # এক্সপোর্ট অপশন
+        keyboard = [
+            [
+                InlineKeyboardButton("📥 CSV ফাইল", callback_data="export_csv"),
+                InlineKeyboardButton("📋 টেক্সট", callback_data="export_text")
+            ],
+            [InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📥 **এক্সপোর্ট ফরম্যাট নির্বাচন করুন:**",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        return
+    
+    elif query.data == "export_csv":
+        # CSV এক্সপোর্ট (এখানে ডকুমেন্ট পাঠাতে হবে, মেসেজ এডিট করা যাবে না)
+        await query.edit_message_text("📥 CSV ফাইল তৈরি হচ্ছে... এক মুহূর্ত অপেক্ষা করুন।")
+        
+        # নতুন মেসেজ হিসেবে CSV পাঠানো
+        if user_id in all_data and all_data[user_id]:
+            import io
+            output = io.StringIO()
+            writer = csv.writer(output)
+            
+            writer.writerow(['Symbol', 'Capital', 'Risk%', 'Buy', 'SL', 'TP', 'RRR', 'Position', 'Exposure'])
+            
+            for item in all_data[user_id]:
+                writer.writerow([
+                    item['symbol'],
+                    item['capital'],
+                    item['risk']*100,
+                    item['buy'],
+                    item['sl'],
+                    item['tp'],
+                    calculate_rrr(item),
+                    calculate_position(item),
+                    calculate_exposure(item)
+                ])
+            
+            csv_data = output.getvalue()
+            output.close()
+            
+            await context.bot.send_document(
+                chat_id=user_id,
+                document=io.BytesIO(csv_data.encode()),
+                filename=f"signals_{datetime.now().strftime('%Y%m%d')}.csv",
+                caption="📥 আপনার সিগন্যাল এক্সপোর্ট করা হলো"
+            )
+        return
+    
+    elif query.data == "menu_help":
+        await help_command(update, context)
+        return
+    
+    elif query.data == "menu_delete_all":
+        # কনফার্মেশন বাটন
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ হ্যাঁ, মুছুন", callback_data="confirm_delete"),
+                InlineKeyboardButton("❌ না, বাতিল", callback_data="back_to_main")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "⚠️ **আপনি কি নিশ্চিত?**\n\nআপনার সব ডাটা চিরতরে মুছে যাবে!",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        return
+    
+    elif query.data == "confirm_delete":
+        if user_id in all_data:
+            del all_data[user_id]
+            save_data(all_data)
+            await query.edit_message_text("✅ সব ডাটা মুছে ফেলা হয়েছে।")
+        return
+    
+    elif query.data == "show_detailed":
+        if user_id not in all_data or not all_data[user_id]:
+            await query.edit_message_text("📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।")
+            return
+        
+        sorted_data = sorted(
+            all_data[user_id], 
+            key=lambda x: calculate_rrr(x), 
+            reverse=True
+        )
+        
+        table = create_table_view(sorted_data)
+        
+        keyboard = [[InlineKeyboardButton("🔙 কম্প্যাক্ট ভিউ", callback_data="menu_list")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"📊 **বিস্তারিত ভিউ:**\n\n{table}",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        return
+    
+    elif query.data == "add_more":
+        await query.edit_message_text(
+            "➕ নতুন সিগন্যাল পাঠান:\n\nফরম্যাট: `সিম্বল ক্যাপিটাল রিস্ক বাই এসএল টিপি`\nযেমন: `aaa 500000 0.01 30 29 39`",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # হেল্প সাব-মেনু
+    elif query.data == "help_format":
+        await query.edit_message_text(
+            """📋 **ফরম্যাট ব্যাখ্যা**
+
+`aaa 500000 0.01 30 29 39`
+
+• **aaa** - স্টক সিম্বল (যেকোনো নাম)
+• **500000** - মূলধন (টাকায়)
+• **0.01** - রিস্ক পার্সেন্টেজ (1%)
+• **30** - বাই প্রাইস
+• **29** - স্টপ লস (SL)
+• **39** - টার্গেট প্রাইস (TP)""",
+            parse_mode='Markdown'
+        )
+        return
+    
+    elif query.data == "help_calc":
+        await query.edit_message_text(
+            """📊 **ক্যালকুলেশন ফর্মুলা**
+
+• **RRR** = (TP - Buy) / (Buy - SL)
+• **পজিশন** = (ক্যাপিটাল × রিস্ক) / (Buy - SL)
+• **এক্সপোজার** = পজিশন × Buy
+• **রিস্ক অ্যামাউন্ট** = ক্যাপিটাল × রিস্ক""",
+            parse_mode='Markdown'
+        )
+        return
+    
+    elif query.data == "help_commands":
+        await query.edit_message_text(
+            """🎯 **কমান্ড লিস্ট**
+
+/start - বট শুরু করুন
+/help - সাহায্য দেখুন
+/list - কম্প্যাক্ট ভিউ দেখুন
+/listall - বিস্তারিত ভিউ দেখুন
+/stats - পরিসংখ্যান দেখুন
+/export - ডাটা এক্সপোর্ট করুন
+/delete - সব ডাটা মুছুন""",
+            parse_mode='Markdown'
+        )
+        return
+
+async def post_init(application: Application):
+    """বট চালু হওয়ার পর কমান্ড সেট করা"""
+    commands = [
+        BotCommand("start", "বট শুরু করুন"),
+        BotCommand("help", "সাহায্য দেখুন"),
+        BotCommand("list", "কম্প্যাক্ট ভিউ দেখুন"),
+        BotCommand("listall", "বিস্তারিত ভিউ দেখুন"),
+        BotCommand("stats", "পরিসংখ্যান দেখুন"),
+        BotCommand("export", "ডাটা এক্সপোর্ট করুন"),
+        BotCommand("delete", "সব ডাটা মুছুন")
+    ]
+    await application.bot.set_my_commands(commands)
+
+async def main():
+    """মেইন ফাংশন"""
+    logger.info("🤖 বট চালু হচ্ছে...")
+    
+    try:
+        # অ্যাপ্লিকেশন তৈরি
+        application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+        # কমান্ড হ্যান্ডলার
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("list", list_data))
+        application.add_handler(CommandHandler("listall", list_all_data))
+        application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(CommandHandler("export", export_data))
+        application.add_handler(CommandHandler("delete", delete_all))
+        
+        # মেসেজ হ্যান্ডলার
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # কলব্যাক হ্যান্ডলার
+        application.add_handler(CallbackQueryHandler(button_callback))
+
+        logger.info("✅ বট সফলভাবে চালু হয়েছে!")
+        
+        # বট চালু করা
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        
+        # বট চালু রাখা
+        while True:
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        logger.error(f"❌ বট চালু করতে সমস্যা: {e}")
+        
+    finally:
+        logger.info("🛑 বট বন্ধ হচ্ছে...")
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 ইউজার বট বন্ধ করেছেন।")
