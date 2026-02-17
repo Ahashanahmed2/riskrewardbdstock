@@ -1,541 +1,417 @@
-import os
-import sys
-import asyncio
 import logging
-import atexit
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    ContextTypes, 
-    CallbackQueryHandler,
-    ConversationHandler,
-    MessageHandler,
-    filters
-)
-from pymongo import MongoClient
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+import json
+import os
 from datetime import datetime
-import certifi
-from bson.objectid import ObjectId
 import re
-import time
 
-# লগিং সেটআপ
+# লগিং সক্রিয় করা
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# PID ফাইল চেক করার জন্য
-PID_FILE = '/tmp/stock_bot.pid'
+# BotFather থেকে পাওয়া বট টোকেন
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # আপনার আসল টোকেন দিন
 
-def check_single_instance():
-    """নিশ্চিত করে যে শুধু একটি instance চলছে"""
-    try:
-        if os.path.exists(PID_FILE):
-            with open(PID_FILE, 'r') as f:
-                old_pid = f.read().strip()
-                if old_pid:
-                    try:
-                        # পুরনো প্রসেস kill করুন
-                        os.kill(int(old_pid), 0)
-                        logger.warning(f"পুরনো instance চলছে (PID: {old_pid})")
-                        os.kill(int(old_pid), 9)
-                        time.sleep(2)
-                    except:
-                        pass
-        
-        # নতুন PID ফাইল তৈরি
-        with open(PID_FILE, 'w') as f:
-            f.write(str(os.getpid()))
-            
-        # বন্ধ করার সময় PID ফাইল ডিলিট
-        def remove_pid():
-            if os.path.exists(PID_FILE):
-                os.remove(PID_FILE)
-        
-        atexit.register(remove_pid)
-        return True
-        
-    except Exception as e:
-        logger.error(f"PID ফাইল এরর: {e}")
-        return True  # এরর হলেও চলতে দিন
+# ডাটা সংরক্ষণের ফাইল
+DATA_FILE = "stock_signals.json"
 
-# Conversation states
-WAITING_FOR_FORM, CONFIRMATION = range(2)
+def load_data():
+    """JSON ফাইল থেকে ডাটা লোড করা"""
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
 
-# Environment Variables
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-MONGODB_URI = os.environ.get('MONGODB_URI')
+def save_data(data):
+    """JSON ফাইলে ডাটা সংরক্ষণ করা"""
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
-if not TELEGRAM_TOKEN:
-    logger.error("❌ TELEGRAM_TOKEN environment variable সেট করা হয়নি!")
-    sys.exit(1)
-
-if not MONGODB_URI:
-    logger.error("❌ MONGODB_URI environment variable সেট করা হয়নি!")
-    sys.exit(1)
-
-# MongoDB কানেকশন
-try:
-    logger.info("MongoDB এ কানেক্ট হচ্ছে...")
-    client = MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
-    db = client["stock_bot_db"]
-    collection = db["stock_signals"]
-    logger.info("✅ MongoDB কানেক্ট সফল!")
-except Exception as e:
-    logger.error(f"❌ MongoDB কানেক্ট ত্রুটি: {e}")
-    sys.exit(1)
-
-def calculate_position(symbol, total_capital, risk_percent, buy_price, sl_price, tp_price):
-    """ট্রেডিং প্যারামিটার ক্যালকুলেট করে"""
-    try:
-        if buy_price <= sl_price:
-            return {"error": "❌ বাই প্রাইস এসএল থেকে বেশি হতে হবে"}
-        
-        if tp_price <= buy_price:
-            return {"error": "❌ টিপি প্রাইস বাই থেকে বেশি হতে হবে"}
-        
-        risk_per_trade = total_capital * risk_percent
-        risk_per_share = buy_price - sl_price
-        
-        if risk_per_share <= 0:
-            return {"error": "❌ ইনভ্যালিড রিস্ক পার শেয়ার ক্যালকুলেশন"}
-        
-        position_size = int(risk_per_trade / risk_per_share)
-        position_size = max(1, position_size)
-        
-        exposure_bdt = position_size * buy_price
-        actual_risk_bdt = position_size * risk_per_share
-        diff = round(buy_price - sl_price, 4)
-        rrr = round((tp_price - buy_price) / (buy_price - sl_price), 2)
-        
-        return {
-            "symbol": symbol.upper(),
-            "buy": round(buy_price, 2),
-            "sl": round(sl_price, 2),
-            "tp": round(tp_price, 2),
-            "position_size": position_size,
-            "exposure_bdt": round(exposure_bdt, 2),
-            "actual_risk_bdt": round(actual_risk_bdt, 2),
-            "diff": diff,
-            "rrr": rrr,
-            "total_capital": total_capital,
-            "risk_percent": risk_percent * 100,
-            "created_at": datetime.now()
-        }
-    except Exception as e:
-        return {"error": f"❌ ক্যালকুলেশন এরর: {str(e)}"}
-
-def format_signal_card(data, show_delete_button=False):
-    """সিগন্যাল কার্ড ফরম্যাট তৈরি করে"""
-    card = (
-        f"╔══════════════════════╗\n"
-        f"║     📊 {data['symbol']} \n"
-        f"╠══════════════════════╣\n"
-        f"║ 💰 ক্যাপিটাল: {data['total_capital']:,.0f} BDT\n"
-        f"║ ⚠️ রিস্ক: {data['risk_percent']:.1f}%\n"
-        f"╠══════════════════════╣\n"
-        f"║ 📈 বাই: {data['buy']}\n"
-        f"║ 📉 SL: {data['sl']}  |  🎯 TP: {data['tp']}\n"
-        f"║ 📊 RRR: {data['rrr']}  |  📏 ডিফ: {data['diff']}\n"
-        f"╠══════════════════════╣\n"
-        f"║ 📦 পজিশন: {data['position_size']} shares\n"
-        f"║ 💵 এক্সপোজার: {data['exposure_bdt']:,.0f} BDT\n"
-        f"║ ⚡ রিস্ক: {data['actual_risk_bdt']:,.0f} BDT\n"
-        f"╚══════════════════════╝"
-    )
+def parse_data_format(text):
+    """ডাটা ফরম্যাট পার্স করা: aaa 500000 0.01 30 29 39"""
+    pattern = r'^([a-zA-Z0-9]+)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$'
+    match = re.match(pattern, text.strip())
     
-    if show_delete_button and '_id' in data:
-        keyboard = [[InlineKeyboardButton("🗑️ ডিলিট", callback_data=f"delete_{data['_id']}")]]
-        return card, InlineKeyboardMarkup(keyboard)
-    return card, None
-
-def create_form_template():
-    """HTML ফর্মের টেমপ্লেট তৈরি করে"""
-    form = (
-        "╔══════════════════════════════════════════════╗\n"
-        "║           📝 স্টক সিগন্যাল ফর্ম             ║\n"
-        "╠══════════════════════════════════════════════╣\n"
-        "║                                              ║\n"
-        "║  📌 সিম্বল        : [   আপনার সিম্বল দিন   ] ║\n"
-        "║                                              ║\n"
-        "║  💰 ক্যাপিটাল     : [   আপনার ক্যাপিটাল    ] ║\n"
-        "║                                              ║\n"
-        "║  ⚠️ রিস্ক %       : [   আপনার রিস্ক %      ] ║\n"
-        "║                                              ║\n"
-        "║  📈 বাই প্রাইস    : [   আপনার বাই প্রাইস   ] ║\n"
-        "║                                              ║\n"
-        "║  📉 এসএল প্রাইস   : [   আপনার এসএল প্রাইস  ] ║\n"
-        "║                                              ║\n"
-        "║  🎯 টিপি প্রাইস   : [   আপনার টিপি প্রাইস  ] ║\n"
-        "║                                              ║\n"
-        "╠══════════════════════════════════════════════╣\n"
-        "║                                              ║\n"
-        "║  একসাথে সব তথ্য দিন স্পেস দিয়ে:             ║\n"
-        "║                                              ║\n"
-        "║  সিম্বল ক্যাপিটাল রিস্ক% বাই এসএল টিপি       ║\n"
-        "║                                              ║\n"
-        "║  📝 উদাহরণ:                                 ║\n"
-        "║  aaa 500000 0.01 30 29 39                    ║\n"
-        "║                                              ║\n"
-        "╚══════════════════════════════════════════════╝"
-    )
-    return form
-
-def parse_form_input(text):
-    """ইউজারের ইনপুট পার্স করে (স্পেস সেপারেটেড)"""
-    try:
-        # স্পেস দিয়ে আলাদা করা
-        parts = text.strip().split()
-        
-        if len(parts) != 6:
-            return None, "❌ ৬টি মান দিন (স্পেস দিয়ে আলাদা করে)"
-        
-        symbol = parts[0].upper()
-        
-        # ক্যাপিটাল থেকে কমা ও বিডিটি বাদ
-        capital_str = re.sub(r'[^\d.]', '', parts[1])
-        capital = float(capital_str)
-        
-        risk = float(parts[2])
-        buy = float(parts[3])
-        sl = float(parts[4])
-        tp = float(parts[5])
-        
-        # ভ্যালিডেশন
-        if len(symbol) > 10:
-            return None, "❌ সিম্বল ১০ অক্ষরের বেশি হতে পারবে না"
-        
-        if capital <= 0:
-            return None, "❌ ক্যাপিটাল পজিটিভ হতে হবে"
-        
-        if risk <= 0 or risk > 1:
-            return None, "❌ রিস্ক ০ থেকে ১ এর মধ্যে হতে হবে"
-        
-        if buy <= 0:
-            return None, "❌ বাই প্রাইস পজিটিভ হতে হবে"
-        
-        if sl <= 0:
-            return None, "❌ এসএল প্রাইস পজিটিভ হতে হবে"
-        
-        if tp <= 0:
-            return None, "❌ টিপি প্রাইস পজিটিভ হতে হবে"
-        
-        if sl >= buy:
-            return None, "❌ এসএল বাই থেকে কম হতে হবে"
-        
-        if tp <= buy:
-            return None, "❌ টিপি বাই থেকে বেশি হতে হবে"
-        
+    if match:
         return {
-            'symbol': symbol,
-            'capital': capital,
-            'risk': risk,
-            'buy': buy,
-            'sl': sl,
-            'tp': tp
-        }, None
-        
-    except ValueError as e:
-        return None, f"❌ সঠিক সংখ্যা দিন: {str(e)}"
-    except Exception as e:
-        return None, f"❌ ফরম্যাট ঠিক নয়: {str(e)}"
+            'symbol': match.group(1).upper(),
+            'capital': float(match.group(2)),
+            'risk': float(match.group(3)),
+            'buy': float(match.group(4)),
+            'sl': float(match.group(5)),
+            'tp': float(match.group(6)),
+            'timestamp': datetime.now().isoformat()
+        }
+    return None
 
-def format_form_preview(data):
-    """ফর্ম প্রিভিউ দেখায়"""
-    preview = (
-        "╔════════════════════════════════╗\n"
-        "║     📝 আপনার দেওয়া তথ্য       ║\n"
-        "╠════════════════════════════════╣\n"
-        f"║ 📌 সিম্বল      : {data['symbol']:<12} ║\n"
-        f"║ 💰 ক্যাপিটাল   : {data['capital']:,.0f} BDT      ║\n"
-        f"║ ⚠️ রিস্ক       : {data['risk']*100:.1f}%          ║\n"
-        f"║ 📈 বাই         : {data['buy']:<12} ║\n"
-        f"║ 📉 এসএল        : {data['sl']:<12} ║\n"
-        f"║ 🎯 টিপি        : {data['tp']:<12} ║\n"
-        "╚════════════════════════════════╝"
-    )
-    return preview
+def calculate_rrr(item):
+    """RRR (রিস্ক রিওয়ার্ড রেশিও) ক্যালকুলেশন: (TP - Buy) / (Buy - SL)"""
+    try:
+        buy = item['buy']
+        sl = item['sl']
+        tp = item['tp']
+        
+        risk = buy - sl
+        reward = tp - buy
+        
+        if risk > 0:
+            rrr = reward / risk
+        else:
+            rrr = 0
+            
+        return round(rrr, 2)
+    except:
+        return 0
+
+def calculate_diff(item):
+    """Buy - SL (ডিফারেন্স) ক্যালকুলেশন"""
+    return round(item['buy'] - item['sl'], 2)
+
+def calculate_position(item):
+    """পজিশন সাইজ ক্যালকুলেশন: (ক্যাপিটাল * রিস্ক) / (বাই - SL)"""
+    try:
+        risk_amount = item['capital'] * item['risk']
+        diff = item['buy'] - item['sl']
+        if diff > 0:
+            position = risk_amount / diff
+            return round(position)
+        return 0
+    except:
+        return 0
+
+def calculate_exposure(item):
+    """এক্সপোজার ক্যালকুলেশন: পজিশন * বাই প্রাইস"""
+    position = calculate_position(item)
+    return round(position * item['buy'])
+
+def calculate_risk_amount(item):
+    """রিস্ক অ্যামাউন্ট ক্যালকুলেশন: ক্যাপিটাল * রিস্ক%"""
+    return round(item['capital'] * item['risk'])
+
+def format_signal(item, index=None):
+    """সিগন্যাল ফরম্যাট করা (আপনার দেওয়া স্টাইলে)"""
+    rrr = calculate_rrr(item)
+    diff = calculate_diff(item)
+    position = calculate_position(item)
+    exposure = calculate_exposure(item)
+    risk_amount = calculate_risk_amount(item)
+    
+    # হেডার তৈরী
+    if index is not None:
+        header = f"🔴 #{index} {item['symbol']}"
+    else:
+        header = f"📊 {item['symbol']}"
+    
+    # বক্সের প্রস্থ নির্ধারণ
+    width = 38
+    
+    # উপরের লাইন
+    top_line = "╔" + "═" * (width - 2) + "╗"
+    
+    # হেডার লাইন
+    header_line = f"║     {header:<{width-8}}║"
+    
+    # ডিভাইডার
+    divider = "╠" + "═" * (width - 2) + "╣"
+    
+    # ক্যাপিটাল এবং রিস্ক লাইন
+    capital_line = f"║ 💰 ক্যাপিটাল: {item['capital']:,.0f} BDT{' ' * (width - 28 - len(str(int(item['capital'])))),<{width-2}}║"
+    risk_line = f"║ ⚠️ রিস্ক: {item['risk']*100}%{' ' * (width - 19)}║"
+    
+    # বাই, SL, TP লাইন
+    trading_line = f"║ 📈 বাই: {item['buy']}  |  🛑 SL: {item['sl']}  |  🎯 TP: {item['tp']}{' ' * (width - 42)}║"
+    
+    # RRR এবং ডিফ লাইন
+    rrr_line = f"║ 📊 RRR: {rrr}  |  📏 ডিফ: {diff}{' ' * (width - 31)}║"
+    
+    # পজিশন, এক্সপোজার, রিস্ক লাইন
+    position_line = f"║ 📦 পজিশন: {position:,} shares{' ' * (width - 28)}║"
+    exposure_line = f"║ 💵 এক্সপোজার: {exposure:,} BDT{' ' * (width - 30)}║"
+    risk_amount_line = f"║ ⚡ রিস্ক: {risk_amount:,} BDT{' ' * (width - 25)}║"
+    
+    # নিচের লাইন
+    bottom_line = "╚" + "═" * (width - 2) + "╝"
+    
+    # সম্পূর্ণ বক্স
+    box = f"""
+{top_line}
+{header_line}
+{divider}
+{capital_line}
+{risk_line}
+{divider}
+{trading_line}
+{rrr_line}
+{divider}
+{position_line}
+{exposure_line}
+{risk_amount_line}
+{bottom_line}
+"""
+    
+    return box
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/start কমান্ড হ্যান্ডলার"""
     user = update.effective_user
-    keyboard = [
-        [InlineKeyboardButton("📝 ফর্ম পূরণ করুন", callback_data="fill_form")],
-        [InlineKeyboardButton("📊 সংরক্ষিত সিগন্যাল", callback_data="view_signals")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    welcome_message = """
+╔══════════════════════════════════════════╗
+║        📝 স্টক সিগন্যাল বট              ║
+╠══════════════════════════════════════════╣
+║  একসাথে সব তথ্য দিন স্পেস দিয়ে:         ║
+║                                          ║
+║  সিম্বল ক্যাপিটাল রিস্ক বাই এসএল টিপি    ║
+║                                          ║
+║  📝 উদাহরণ:                             ║
+║  aaa 500000 0.01 30 29 39                ║
+║                                          ║
+╠══════════════════════════════════════════╣
+║                                          ║
+║  📋 কমান্ড সমূহ:                         ║
+║  /list - সব সিগন্যাল দেখুন               ║
+║  /delete - সব ডাটা মুছুন                  ║
+║  /help - সাহায্য দেখুন                    ║
+║                                          ║
+╚══════════════════════════════════════════╝
+"""
     
     await update.message.reply_text(
-        f"👋 হ্যালো {user.first_name}!\n"
-        "আমি **Risk Reward BD Stock Bot**\n"
-        "নিচের মেনু থেকে সিলেক্ট করুন:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        f'হ্যালো {user.first_name}! 👋\n' + welcome_message,
+        parse_mode='HTML'
     )
 
-async def show_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ফর্ম দেখায়"""
-    query = update.callback_query
-    await query.answer()
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/help কমান্ড হ্যান্ডলার"""
+    help_message = """
+╔══════════════════════════════════════════╗
+║           📝 ব্যবহার বিধি                ║
+╠══════════════════════════════════════════╣
+║                                          ║
+║  নিচের ফরম্যাটে ডাটা পাঠান:               ║
+║  <code>aaa 500000 0.01 30 29 39</code>   ║
+║                                          ║
+║  যেখানে:                                 ║
+║  • aaa      = স্টক সিম্বল                 ║
+║  • 500000   = মূলধন (টাকা)                ║
+║  • 0.01     = রিস্ক (1%)                   ║
+║  • 30       = বাই প্রাইস                   ║
+║  • 29       = স্টপ লস (SL)                 ║
+║  • 39       = টার্গেট (TP)                  ║
+║                                          ║
+╠══════════════════════════════════════════╣
+║                                          ║
+║  📊 ক্যালকুলেশন:                         ║
+║  • RRR = (TP-Buy)/(Buy-SL)               ║
+║  • পজিশন = (রিস্ক অ্যামাউন্ট)/ডিফ        ║
+║  • এক্সপোজার = পজিশন × বাই               ║
+║                                          ║
+╚══════════════════════════════════════════╝
+"""
     
-    form_template = create_form_template()
-    
-    keyboard = [[InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"{form_template}\n\n"
-        "👉 একসাথে সব তথ্য স্পেস দিয়ে লিখুন:\n"
-        "উদাহরণ: aaa 500000 0.01 30 29 39",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+    await update.message.reply_text(
+        help_message,
+        parse_mode='HTML'
     )
-    return WAITING_FOR_FORM
 
-async def handle_form_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ফর্মের ইনপুট হ্যান্ডল করে"""
-    user_input = update.message.text
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ইনকামিং মেসেজ হ্যান্ডলার"""
+    user_id = str(update.effective_user.id)
+    text = update.message.text.strip()
     
-    # ইনপুট পার্স করা
-    data, error = parse_form_input(user_input)
+    # ডাটা পার্স করা
+    data_item = parse_data_format(text)
     
-    if error:
-        keyboard = [[InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]]
+    if data_item:
+        # বিদ্যমান ডাটা লোড
+        all_data = load_data()
+        
+        # ইউজার ডাটা ইনিশিয়ালাইজ
+        if user_id not in all_data:
+            all_data[user_id] = []
+        
+        # নতুন ডাটা যোগ
+        all_data[user_id].append(data_item)
+        
+        # ডাটা সংরক্ষণ
+        save_data(all_data)
+        
+        # ফরম্যাটেড সিগন্যাল তৈরি
+        signal_box = format_signal(data_item)
+        
         await update.message.reply_text(
-            f"{error}\n\n"
-            "সঠিক ফরম্যাট: সিম্বল ক্যাপিটাল রিস্ক% বাই এসএল টিপি\n"
-            "উদাহরণ: aaa 500000 0.01 30 29 39\n\n"
-            "আবার চেষ্টা করুন অথবা মেনুতে ফিরুন:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"✅ সিগন্যাল সংরক্ষিত!\n{signal_box}",
+            parse_mode='HTML'
         )
-        return WAITING_FOR_FORM
-    
-    # ডাটা টেম্পোরারি স্টোর
-    context.user_data['form_data'] = data
-    
-    # প্রিভিউ দেখান
-    preview = format_form_preview(data)
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ সংরক্ষণ করুন", callback_data="confirm_save"),
-            InlineKeyboardButton("❌ বাতিল", callback_data="cancel_save")
-        ],
-        [InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"{preview}\n\n"
-        "আপনার তথ্য যাচাই করুন। সংরক্ষণ করতে চান?",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-    return CONFIRMATION
-
-async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """সংরক্ষণ নিশ্চিত করা"""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "confirm_save":
-        data = context.user_data.get('form_data')
-        
-        if not data:
-            await query.edit_message_text("❌ কোনো ডাটা পাওয়া যায়নি!")
-            return ConversationHandler.END
-        
-        # ক্যালকুলেশন
-        result = calculate_position(
-            data['symbol'],
-            data['capital'],
-            data['risk'],
-            data['buy'],
-            data['sl'],
-            data['tp']
-        )
-        
-        if "error" in result:
-            await query.edit_message_text(f"❌ {result['error']}")
-            return ConversationHandler.END
-        
-        # MongoDB-তে সংরক্ষণ
-        result['user_id'] = query.from_user.id
-        result['username'] = query.from_user.username or query.from_user.first_name
-        
-        insert_result = collection.insert_one(result)
-        result['_id'] = insert_result.inserted_id
-        
-        # ফাইনাল কার্ড দেখান
-        card_text, keyboard = format_signal_card(result, show_delete_button=True)
-        
-        await query.edit_message_text(
-            f"{card_text}\n\n✅ সিগন্যাল সংরক্ষণ করা হয়েছে!",
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
-        
-        logger.info(f"Signal saved for {result['symbol']} by {query.from_user.username}")
-        
     else:
-        await query.edit_message_text("❌ সংরক্ষণ বাতিল করা হয়েছে।")
-    
-    context.user_data.clear()
-    return ConversationHandler.END
+        await update.message.reply_text(
+            """
+❌ ভুল ফরম্যাট!
 
-async def view_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """সংরক্ষিত সিগন্যাল দেখায়"""
-    query = update.callback_query
-    await query.answer()
-    
-    signals = list(collection.find({"user_id": query.from_user.id}))
-    
-    if not signals:
-        keyboard = [[InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]]
-        await query.edit_message_text(
-            "📭 আপনার কোনো সিগন্যাল নেই।",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+সঠিক ফরম্যাট: <code>aaa 500000 0.01 30 29 39</code>
+
+উদাহরণ:
+<code>aaa 500000 0.01 30 29 39</code>
+<code>bbb 1000000 0.02 45 44 55</code>
+
+বিস্তারিত জানতে /help ব্যবহার করুন
+            """,
+            parse_mode='HTML'
         )
+
+async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """সব ডাটা তালিকা দেখানো (RRR অনুযায়ী সাজানো)"""
+    user_id = str(update.effective_user.id)
+    all_data = load_data()
+    
+    if user_id not in all_data or not all_data[user_id]:
+        await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
         return
     
-    # RRR অনুযায়ী সাজানো (উচ্চ থেকে নিম্ন) এবং তারপর diff (নিম্ন থেকে উচ্চ)
-    sorted_signals = sorted(signals, key=lambda x: (-x['rrr'], x['diff']))
-    
-    await query.edit_message_text(
-        f"📊 **আপনার {len(sorted_signals)}টি সিগন্যাল (RRR বেশি → কম, ডিফ কম → বেশি):**",
-        parse_mode='Markdown'
+    # RRR অনুযায়ী সাজানো (বেশি আগে)
+    sorted_data = sorted(
+        all_data[user_id], 
+        key=lambda x: calculate_rrr(x), 
+        reverse=True
     )
     
-    for signal in sorted_signals:
-        card_text, keyboard = format_signal_card(signal, show_delete_button=True)
-        await query.message.reply_text(card_text, reply_markup=keyboard, parse_mode='Markdown')
-        await asyncio.sleep(0.5)
+    # হেডার
+    header = """
+╔══════════════════════════════════════════╗
+║        📋 আপনার সিগন্যাল তালিকা         ║
+║        (RRR বেশি আগে)                    ║
+╚══════════════════════════════════════════╝
+"""
     
-    keyboard = [[InlineKeyboardButton("🔙 মেনুতে ফিরুন", callback_data="back_to_menu")]]
-    await query.message.reply_text(
-        "মেনুতে ফিরতে বাটন ক্লিক করুন:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text(header, parse_mode='HTML')
+    
+    # প্রতিটি সিগন্যাল আলাদাভাবে পাঠান
+    for i, item in enumerate(sorted_data, 1):
+        signal_box = format_signal(item, i)
+        
+        # বাটন তৈরি
+        keyboard = [[
+            InlineKeyboardButton(f"🗑 মুছুন #{i}", callback_data=f"delete_{i-1}"),
+            InlineKeyboardButton(f"✏️ সম্পাদনা #{i}", callback_data=f"edit_{i-1}")
+        ]]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            signal_box,
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
 
-async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """মেইন মেনুতে ফিরে যায়"""
-    query = update.callback_query
-    await query.answer()
+async def delete_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """সব ইউজার ডাটা মুছে ফেলা"""
+    user_id = str(update.effective_user.id)
+    all_data = load_data()
     
-    keyboard = [
-        [InlineKeyboardButton("📝 ফর্ম পূরণ করুন", callback_data="fill_form")],
-        [InlineKeyboardButton("📊 সংরক্ষিত সিগন্যাল", callback_data="view_signals")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "📌 **মেইন মেনু**\n\n"
-        "আপনি কি করতে চান?",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    if user_id in all_data:
+        del all_data[user_id]
+        save_data(all_data)
+        await update.message.reply_text(
+            """
+╔══════════════════════════════════════════╗
+║        ✅ সব ডাটা মুছে ফেলা হয়েছে        ║
+╚══════════════════════════════════════════╝
+            """
+        )
+    else:
+        await update.message.reply_text('📭 আপনার মুছে ফেলার মতো কোনো ডাটা নেই।')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ডিলিট বাটনের কলব্যাক হ্যান্ডলার"""
+    """বাটন ক্লিক হ্যান্ডলার"""
     query = update.callback_query
     await query.answer()
     
-    try:
-        if query.data == "delete_all":
-            result = collection.delete_many({"user_id": query.from_user.id})
-            await query.edit_message_text(f"✅ {result.deleted_count}টি সিগন্যাল ডিলিট করা হয়েছে।")
-            
-        elif query.data.startswith("delete_"):
-            signal_id = query.data.replace("delete_", "")
-            result = collection.delete_one({"_id": ObjectId(signal_id), "user_id": query.from_user.id})
-            
-            if result.deleted_count > 0:
-                await query.edit_message_text("✅ সিগন্যালটি ডিলিট করা হয়েছে।")
-            else:
-                await query.edit_message_text("❌ সিগন্যালটি পাওয়া যায়নি।")
-                
-    except Exception as e:
-        await query.edit_message_text(f"❌ একটি ত্রুটি হয়েছে: {str(e)}")
-        logger.error(f"Error in button_callback: {e}")
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """কনভারসেশন বাতিল"""
-    await update.message.reply_text(
-        "🚫 অপারেশন বাতিল করা হয়েছে।\n"
-        "/start দিয়ে আবার শুরু করতে পারেন।"
+    user_id = str(query.from_user.id)
+    all_data = load_data()
+    
+    if user_id not in all_data or not all_data[user_id]:
+        await query.edit_message_text("📭 কোনো ডাটা পাওয়া যায়নি।")
+        return
+    
+    # কলব্যাক ডাটা পার্স
+    callback_data = query.data
+    action, index_str = callback_data.split('_')
+    index = int(index_str)
+    
+    # ডাটা সাজানো
+    sorted_data = sorted(
+        all_data[user_id], 
+        key=lambda x: calculate_rrr(x), 
+        reverse=True
     )
-    context.user_data.clear()
-    return ConversationHandler.END
+    
+    if index >= len(sorted_data):
+        await query.edit_message_text("❌ এন্ট্রি পাওয়া যায়নি।")
+        return
+    
+    if action == "delete":
+        # এই এন্ট্রি মুছে ফেলা
+        actual_item = sorted_data[index]
+        
+        user_data = all_data[user_id]
+        for i, item in enumerate(user_data):
+            if (item['symbol'] == actual_item['symbol'] and 
+                item['capital'] == actual_item['capital'] and
+                item['risk'] == actual_item['risk'] and
+                item['buy'] == actual_item['buy'] and
+                item['sl'] == actual_item['sl'] and
+                item['tp'] == actual_item['tp']):
+                user_data.pop(i)
+                break
+        
+        if not user_data:
+            del all_data[user_id]
+        
+        save_data(all_data)
+        
+        await query.edit_message_text(f"✅ এন্ট্রি #{index+1} মুছে ফেলা হয়েছে।")
+    
+    elif action == "edit":
+        await query.edit_message_text(
+            f"""
+✏️ এন্ট্রি #{index+1} সম্পাদনা করতে, নতুন ডাটা এই ফরম্যাটে পাঠান:
 
-async def run_bot():
-    """বট চালানোর async ফাংশন"""
-    try:
-        logger.info("🤖 Risk Reward BD Stock Bot চালু হচ্ছে...")
-        
-        # সিঙ্গেল instance চেক
-        check_single_instance()
-        
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-        
-        # ফর্ম কনভারসেশন হ্যান্ডলার
-        form_handler = ConversationHandler(
-            entry_points=[CallbackQueryHandler(show_form, pattern="^fill_form$")],
-            states={
-                WAITING_FOR_FORM: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_form_input),
-                    CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$")
-                ],
-                CONFIRMATION: [
-                    CallbackQueryHandler(confirm_save, pattern="^(confirm_save|cancel_save)$"),
-                    CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$")
-                ],
-            },
-            fallbacks=[CommandHandler('cancel', cancel)],
+<code>সিম্বল ক্যাপিটাল রিস্ক বাই এসএল টিপি</code>
+
+উদাহরণ:
+<code>aaa 500000 0.01 30 29 39</code>
+
+পাঠানোর পর এই এন্ট্রি প্রতিস্থাপিত হবে।
+            """,
+            parse_mode='HTML'
         )
-        
-        # হ্যান্ডলার যোগ
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CallbackQueryHandler(view_signals, pattern="^view_signals$"))
-        app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
-        app.add_handler(form_handler)
-        app.add_handler(CallbackQueryHandler(button_callback, pattern="^(delete_all|delete_.*)$"))
-        
-        logger.info("✅ বট চালু হয়েছে")
-        
-        # বট চালান
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        
-        logger.info("✅ Polling শুরু হয়েছে")
-        
-        # বট চলতে থাকবে
-        try:
-            while True:
-                await asyncio.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("🛑 বট বন্ধ হচ্ছে...")
-        finally:
-            logger.info("🧹 ক্লিনআপ হচ্ছে...")
-            await app.updater.stop()
-            await app.stop()
-            await app.shutdown()
-            
-    except Exception as e:
-        logger.error(f"❌ বট চালু ত্রুটি: {e}", exc_info=True)
-        raise
+        context.user_data['editing_index'] = index
 
 def main():
-    """মেইন ফাংশন"""
-    try:
-        asyncio.run(run_bot())
-    except KeyboardInterrupt:
-        logger.info("🛑 বট বন্ধ হচ্ছে...")
-    except Exception as e:
-        logger.error(f"❌ মেইন ত্রুটি: {e}")
-        sys.exit(1)
+    """বট চালু করা"""
+    application = Application.builder().token(BOT_TOKEN).build()
 
-if __name__ == "__main__":
+    # কমান্ড হ্যান্ডলার
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("list", list_data))
+    application.add_handler(CommandHandler("delete", delete_all))
+    
+    # মেসেজ হ্যান্ডলার
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # কলব্যাক হ্যান্ডলার
+    application.add_handler(CallbackQueryHandler(button_callback))
+
+    print("বট চালু হচ্ছে...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
     main()
