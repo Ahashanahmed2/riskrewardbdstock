@@ -8,6 +8,11 @@ from datetime import datetime
 import re
 import csv
 import io
+import threading
+
+# Flask HTTP সার্ভার for UptimeRobot
+from flask import Flask, jsonify
+import requests
 
 # লগিং সক্রিয় করা
 logging.basicConfig(
@@ -18,6 +23,31 @@ logger = logging.getLogger(__name__)
 
 # আপনার দেওয়া বট টোকেন
 BOT_TOKEN = "8597965743:AAEV7NlAKH5VJZIXgqJ8iO02GoWKJHMIafc"
+
+# Flask অ্যাপ তৈরি
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return jsonify({
+        'status': 'active',
+        'message': 'Stock Signal Bot is running!',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy'}), 200
+
+@app.route('/ping')
+def ping():
+    return jsonify({'status': 'pong'}), 200
+
+def run_flask():
+    """Flask সার্ভার চালানোর ফাংশন"""
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    logger.info(f"🌐 HTTP সার্ভার চালু হয়েছে (পোর্ট: {port})")
 
 # ডাটা সংরক্ষণের ফাইল
 DATA_FILE = "stock_signals.json"
@@ -41,7 +71,7 @@ def parse_data_format(text):
     """ডাটা ফরম্যাট পার্স করা: aaa 500000 0.01 30 29 39"""
     pattern = r'^([a-zA-Z0-9]+)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$'
     match = re.match(pattern, text.strip())
-    
+
     if match:
         return {
             'symbol': match.group(1).upper(),
@@ -60,15 +90,15 @@ def calculate_rrr(item):
         buy = item['buy']
         sl = item['sl']
         tp = item['tp']
-        
+
         risk = buy - sl
         reward = tp - buy
-        
+
         if risk > 0:
             rrr = reward / risk
         else:
             rrr = 0
-            
+
         return round(rrr, 2)
     except:
         return 0
@@ -105,12 +135,12 @@ def format_signal(item, index=None):
     position = calculate_position(item)
     exposure = calculate_exposure(item)
     risk_amount = calculate_risk_amount(item)
-    
+
     if index is not None:
         header = f"🔴 #{index} {item['symbol']}"
     else:
         header = f"📊 {item['symbol']}"
-    
+
     box = f"""
 ╔════════════════════════════════════╗
 ║  {header:<32}║
@@ -135,55 +165,55 @@ def create_table_view(data_list):
     """বিস্তারিত টেবিল ভিউ"""
     if not data_list:
         return "📭 কোন ডাটা নেই।"
-    
+
     table = "```\n"
     table += "=" * 100 + "\n"
     table += f"{'#':<3} {'Symbol':<8} {'Capital':>12} {'Risk%':>6} {'Buy':>6} {'SL':>6} {'TP':>6} {'RRR':>6} {'Diff':>6} {'Position':>10} {'Exposure':>12}\n"
     table += "=" * 100 + "\n"
-    
+
     for i, item in enumerate(data_list, 1):
         rrr = calculate_rrr(item)
         diff = calculate_diff(item)
         position = calculate_position(item)
         exposure = calculate_exposure(item)
-        
+
         table += f"{i:<3} {item['symbol']:<8} {item['capital']:>12,.0f} {item['risk']*100:>5.1f}% {item['buy']:>6.1f} {item['sl']:>6.1f} {item['tp']:>6.1f} {rrr:>6.1f} {diff:>6.1f} {position:>10,} {exposure:>12,}\n"
-    
+
     table += "=" * 100 + "\n"
     table += "```"
-    
+
     return table
 
 def create_compact_table(data_list):
     """কম্প্যাক্ট টেবিল ভিউ"""
     if not data_list:
         return "📭 কোন ডাটা নেই।"
-    
+
     table = "```\n"
     table += "=" * 60 + "\n"
     table += f"{'#':<3} {'Symbol':<6} {'RRR':>5} {'Buy':>5} {'SL':>5} {'TP':>5} {'Diff':>5}\n"
     table += "=" * 60 + "\n"
-    
+
     for i, item in enumerate(data_list, 1):
         rrr = calculate_rrr(item)
         diff = calculate_diff(item)
         table += f"{i:<3} {item['symbol']:<6} {rrr:>5.1f} {item['buy']:>5.1f} {item['sl']:>5.1f} {item['tp']:>5.1f} {diff:>5.1f}\n"
-    
+
     table += "=" * 60 + "\n"
     table += "```"
-    
+
     return table
 
 def get_statistics(data_list):
     """পরিসংখ্যান বের করা"""
     if not data_list:
         return None
-    
+
     total_signals = len(data_list)
     total_capital = sum(item['capital'] for item in data_list)
     total_risk = sum(item['capital'] * item['risk'] for item in data_list)
     avg_rrr = sum(calculate_rrr(item) for item in data_list) / total_signals
-    
+
     # সিম্বল অনুযায়ী গ্রুপিং
     symbols = {}
     for item in data_list:
@@ -192,7 +222,7 @@ def get_statistics(data_list):
             symbols[sym] = {'count': 0, 'total_capital': 0}
         symbols[sym]['count'] += 1
         symbols[sym]['total_capital'] += item['capital']
-    
+
     return {
         'total_signals': total_signals,
         'total_capital': total_capital,
@@ -204,7 +234,7 @@ def get_statistics(data_list):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start কমান্ড হ্যান্ডলার"""
     user = update.effective_user
-    
+
     # মূল মেনুর বাটন
     keyboard = [
         [
@@ -220,7 +250,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     text = f"""হ্যালো {user.first_name}! 👋
 
 ╔════════════════════════════╗
@@ -235,7 +265,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ╚════════════════════════════╝
 
 নিচের বাটন ব্যবহার করুন:"""
-    
+
     await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,38 +281,38 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     text = """📝 **সাহায্য ও নির্দেশিকা**
 
 নিচের বিষয়গুলো সম্পর্কে জানতে বাটনে ক্লিক করুন:"""
-    
+
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ইনকামিং মেসেজ হ্যান্ডলার"""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip()
-    
+
     data_item = parse_data_format(text)
-    
+
     if data_item:
         all_data = load_data()
-        
+
         if user_id not in all_data:
             all_data[user_id] = []
-        
+
         all_data[user_id].append(data_item)
         save_data(all_data)
-        
+
         signal_box = format_signal(data_item)
-        
+
         # অ্যাকশন বাটন
         keyboard = [[
             InlineKeyboardButton("📋 সব লিস্ট", callback_data="menu_list"),
             InlineKeyboardButton("➕ আরো যোগ", callback_data="add_more")
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await update.message.reply_text(
             f"✅ **সিগন্যাল সংরক্ষিত!**\n{signal_box}",
             parse_mode='Markdown',
@@ -303,19 +333,19 @@ async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """কম্প্যাক্ট টেবিল ভিউ"""
     user_id = str(update.effective_user.id)
     all_data = load_data()
-    
+
     if user_id not in all_data or not all_data[user_id]:
         await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
         return
-    
+
     sorted_data = sorted(
         all_data[user_id], 
         key=lambda x: calculate_rrr(x), 
         reverse=True
     )
-    
+
     table = create_compact_table(sorted_data)
-    
+
     keyboard = [
         [
             InlineKeyboardButton("📊 বিস্তারিত", callback_data="show_detailed"),
@@ -327,7 +357,7 @@ async def list_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await update.message.reply_text(
         f"📋 **কম্প্যাক্ট ভিউ (RRR বেশি আগে):**\n\n{table}",
         parse_mode='Markdown',
@@ -338,24 +368,24 @@ async def list_all_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """বিস্তারিত টেবিল ভিউ দেখানো"""
     user_id = str(update.effective_user.id)
     all_data = load_data()
-    
+
     if user_id not in all_data or not all_data[user_id]:
         await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
         return
-    
+
     # RRR অনুযায়ী সাজানো
     sorted_data = sorted(
         all_data[user_id], 
         key=lambda x: calculate_rrr(x), 
         reverse=True
     )
-    
+
     # বিস্তারিত টেবিল তৈরি
     table = create_table_view(sorted_data)
-    
+
     keyboard = [[InlineKeyboardButton("🔙 কম্প্যাক্ট ভিউ", callback_data="menu_list")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await update.message.reply_text(
         f"📊 **বিস্তারিত ভিউ:**\n\n{table}",
         parse_mode='Markdown',
@@ -366,13 +396,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """পরিসংখ্যান দেখানো"""
     user_id = str(update.effective_user.id)
     all_data = load_data()
-    
+
     if user_id not in all_data or not all_data[user_id]:
         await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
         return
-    
+
     stats = get_statistics(all_data[user_id])
-    
+
     text = f"""📊 **আপনার পরিসংখ্যান**
 
 ╔════════════════════════════╗
@@ -384,33 +414,33 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **সিম্বল অনুযায়ী:**
 """
-    
+
     for sym, data in stats['symbols'].items():
         text += f"• {sym}: {data['count']} টি (টোটাল {data['total_capital']:,.0f} BDT)\n"
-    
+
     keyboard = [[
         InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ডাটা CSV ফরম্যাটে এক্সপোর্ট"""
     user_id = str(update.effective_user.id)
     all_data = load_data()
-    
+
     if user_id not in all_data or not all_data[user_id]:
         await update.message.reply_text('📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।')
         return
-    
+
     # CSV ফাইল তৈরি
     output = io.StringIO()
     writer = csv.writer(output)
-    
+
     # হেডার
     writer.writerow(['Symbol', 'Capital', 'Risk%', 'Buy', 'SL', 'TP', 'RRR', 'Position', 'Exposure', 'Timestamp'])
-    
+
     # ডাটা
     for item in all_data[user_id]:
         writer.writerow([
@@ -425,10 +455,10 @@ async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             calculate_exposure(item),
             item['timestamp'][:10]
         ])
-    
+
     csv_data = output.getvalue()
     output.close()
-    
+
     # ফাইল হিসেবে পাঠানো
     await update.message.reply_document(
         document=io.BytesIO(csv_data.encode()),
@@ -440,7 +470,7 @@ async def delete_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """সব ইউজার ডাটা মুছে ফেলা"""
     user_id = str(update.effective_user.id)
     all_data = load_data()
-    
+
     if user_id in all_data:
         del all_data[user_id]
         save_data(all_data)
@@ -452,10 +482,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """বাটন ক্লিক হ্যান্ডলার"""
     query = update.callback_query
     await query.answer()
-    
+
     user_id = str(query.from_user.id)
     all_data = load_data()
-    
+
     # মেনু হ্যান্ডলিং
     if query.data == "back_to_main":
         keyboard = [
@@ -472,27 +502,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(
             "🔙 **মূল মেনুতে ফিরে আসুন**\n\nনিচের বাটন ব্যবহার করুন:",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
         return
-    
+
     elif query.data == "menu_list":
         if user_id not in all_data or not all_data[user_id]:
             await query.edit_message_text("📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।")
             return
-        
+
         sorted_data = sorted(
             all_data[user_id], 
             key=lambda x: calculate_rrr(x), 
             reverse=True
         )
-        
+
         table = create_compact_table(sorted_data)
-        
+
         keyboard = [
             [
                 InlineKeyboardButton("📊 বিস্তারিত", callback_data="show_detailed"),
@@ -500,21 +530,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(
             f"📋 **কম্প্যাক্ট ভিউ:**\n\n{table}",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
         return
-    
+
     elif query.data == "menu_stats":
         if user_id not in all_data or not all_data[user_id]:
             await query.edit_message_text("📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।")
             return
-        
+
         stats = get_statistics(all_data[user_id])
-        
+
         text = f"""📊 **আপনার পরিসংখ্যান**
 
 ╔════════════════════════════╗
@@ -525,16 +555,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ╚════════════════════════════╝
 
 **সিম্বল অনুযায়ী:**\n"""
-        
+
         for sym, data in stats['symbols'].items():
             text += f"• {sym}: {data['count']} টি (টোটাল {data['total_capital']:,.0f} BDT)\n"
-        
+
         keyboard = [[InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(text, reply_markup=reply_markup)
         return
-    
+
     elif query.data == "menu_export":
         # এক্সপোর্ট অপশন
         keyboard = [
@@ -544,23 +574,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(
             "📥 **এক্সপোর্ট ফরম্যাট নির্বাচন করুন:**",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
         return
-    
+
     elif query.data == "export_csv":
         await query.edit_message_text("📥 CSV ফাইল তৈরি হচ্ছে... এক মুহূর্ত অপেক্ষা করুন।")
-        
+
         if user_id in all_data and all_data[user_id]:
             output = io.StringIO()
             writer = csv.writer(output)
-            
+
             writer.writerow(['Symbol', 'Capital', 'Risk%', 'Buy', 'SL', 'TP', 'RRR', 'Position', 'Exposure'])
-            
+
             for item in all_data[user_id]:
                 writer.writerow([
                     item['symbol'],
@@ -573,10 +603,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     calculate_position(item),
                     calculate_exposure(item)
                 ])
-            
+
             csv_data = output.getvalue()
             output.close()
-            
+
             await context.bot.send_document(
                 chat_id=user_id,
                 document=io.BytesIO(csv_data.encode()),
@@ -584,7 +614,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption="📥 আপনার সিগন্যাল এক্সপোর্ট করা হলো"
             )
         return
-    
+
     elif query.data == "menu_help":
         keyboard = [
             [
@@ -597,14 +627,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(
             "📝 **সাহায্য ও নির্দেশিকা**\n\nনিচের বিষয়গুলো সম্পর্কে জানতে বাটনে ক্লিক করুন:",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
         return
-    
+
     elif query.data == "menu_delete_all":
         # কনফার্মেশন বাটন
         keyboard = [
@@ -614,51 +644,51 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(
             "⚠️ **আপনি কি নিশ্চিত?**\n\nআপনার সব ডাটা চিরতরে মুছে যাবে!",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
         return
-    
+
     elif query.data == "confirm_delete":
         if user_id in all_data:
             del all_data[user_id]
             save_data(all_data)
             await query.edit_message_text("✅ সব ডাটা মুছে ফেলা হয়েছে।")
         return
-    
+
     elif query.data == "show_detailed":
         if user_id not in all_data or not all_data[user_id]:
             await query.edit_message_text("📭 আপনার কোনো সংরক্ষিত সিগন্যাল নেই।")
             return
-        
+
         sorted_data = sorted(
             all_data[user_id], 
             key=lambda x: calculate_rrr(x), 
             reverse=True
         )
-        
+
         table = create_table_view(sorted_data)
-        
+
         keyboard = [[InlineKeyboardButton("🔙 কম্প্যাক্ট ভিউ", callback_data="menu_list")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(
             f"📊 **বিস্তারিত ভিউ:**\n\n{table}",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
         return
-    
+
     elif query.data == "add_more":
         await query.edit_message_text(
             "➕ নতুন সিগন্যাল পাঠান:\n\nফরম্যাট: `সিম্বল ক্যাপিটাল রিস্ক বাই এসএল টিপি`\nযেমন: `aaa 500000 0.01 30 29 39`",
             parse_mode='Markdown'
         )
         return
-    
+
     # হেল্প সাব-মেনু
     elif query.data == "help_format":
         await query.edit_message_text(
@@ -675,7 +705,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         return
-    
+
     elif query.data == "help_calc":
         await query.edit_message_text(
             """📊 **ক্যালকুলেশন ফর্মুলা**
@@ -687,7 +717,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         return
-    
+
     elif query.data == "help_commands":
         await query.edit_message_text(
             """🎯 **কমান্ড লিস্ট**
@@ -719,8 +749,13 @@ async def post_init(application: Application):
 async def main():
     """মেইন ফাংশন"""
     logger.info("🤖 বট চালু হচ্ছে...")
-    
+
     try:
+        # Flask সার্ভার আলাদা থ্রেডে চালু করুন
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        logger.info("🌐 HTTP সার্ভার থ্রেড চালু হয়েছে")
+
         # অ্যাপ্লিকেশন তৈরি
         application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
@@ -732,27 +767,27 @@ async def main():
         application.add_handler(CommandHandler("stats", stats_command))
         application.add_handler(CommandHandler("export", export_data))
         application.add_handler(CommandHandler("delete", delete_all))
-        
+
         # মেসেজ হ্যান্ডলার
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
+
         # কলব্যাক হ্যান্ডলার
         application.add_handler(CallbackQueryHandler(button_callback))
 
         logger.info("✅ বট সফলভাবে চালু হয়েছে!")
-        
+
         # বট চালু করা
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
-        
+
         # বট চালু রাখা
         while True:
             await asyncio.sleep(1)
-            
+
     except Exception as e:
         logger.error(f"❌ বট চালু করতে সমস্যা: {e}")
-        
+
     finally:
         logger.info("🛑 বট বন্ধ হচ্ছে...")
 
