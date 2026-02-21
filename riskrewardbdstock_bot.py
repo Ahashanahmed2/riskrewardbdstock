@@ -128,13 +128,54 @@ def calculate_risk_amount(item):
     """রিস্ক অ্যামাউন্ট ক্যালকুলেশন"""
     return int(round(item['capital'] * item['risk']))
 
+def calculate_profit_loss(item):
+    """একটি স্টক থেকে কত টাকা profit/loss হবে তা ক্যালকুলেশন"""
+    try:
+        position = calculate_position(item)
+        buy = item['buy']
+        tp = item['tp']
+        sl = item['sl']
+        
+        profit_amount = (tp - buy) * position
+        loss_amount = (buy - sl) * position
+        
+        return {
+            'profit': int(round(profit_amount)),
+            'loss': int(round(loss_amount))
+        }
+    except:
+        return {'profit': 0, 'loss': 0}
+
+def calculate_profit_percentage(item):
+    """প্রফিট পার্সেন্টেজ ক্যালকুলেশন"""
+    try:
+        buy = item['buy']
+        tp = item['tp']
+        profit_percent = ((tp - buy) / buy) * 100
+        return round(profit_percent, 2)
+    except:
+        return 0
+
+def calculate_loss_percentage(item):
+    """লস পার্সেন্টেজ ক্যালকুলেশন"""
+    try:
+        buy = item['buy']
+        sl = item['sl']
+        loss_percent = ((buy - sl) / buy) * 100
+        return round(loss_percent, 2)
+    except:
+        return 0
+
 def format_signal(item, index=None):
-    """সিগন্যাল ফরম্যাট করা"""
+    """সিগন্যাল ফরম্যাট করা - আপডেটেড ভার্সন"""
     rrr = calculate_rrr(item)
     diff = calculate_diff(item)
     position = calculate_position(item)
     exposure = calculate_exposure(item)
     risk_amount = calculate_risk_amount(item)
+    pl = calculate_profit_loss(item)
+    profit_percent = calculate_profit_percentage(item)
+    loss_percent = calculate_loss_percentage(item)
 
     if index is not None:
         header = f"🔴 #{index} {item['symbol']}"
@@ -148,58 +189,63 @@ def format_signal(item, index=None):
 ║  💰 ক্যাপিটাল: {item['capital']:>12,.0f} BDT  ║
 ║  ⚠️ রিস্ক: {item['risk']*100:>15.1f}%        ║
 ╠════════════════════════════════════╣
-║  📈 বাই: {item['buy']:>8.1f}                  ║
-║  🛑 SL: {item['sl']:>9.1f}                    ║
-║  🎯 TP: {item['tp']:>9.1f}                    ║
-║  📊 RRR: {rrr:>8.1f}                          ║
-║  📏 ডিফ: {diff:>8.1f}                         ║
+║  📈 বাই: {item['buy']:>8.1f}                   ║
+║  🛑 SL:  {item['sl']:>8.1f}                   ║
+║  🎯 TP:  {item['tp']:>8.1f}                   ║
+╠════════════════════════════════════╣
+║  💰 প্রফিট: {pl['profit']:>9,} BDT ({profit_percent:>5.1f}%)  ║
+║  📉 লস:    {pl['loss']:>9,} BDT ({loss_percent:>5.1f}%)    ║
+╠════════════════════════════════════╣
+║  📊 RRR:   {rrr:>5.1f}              ডিফ: {diff:>5.1f}   ║
 ╠════════════════════════════════════╣
 ║  📦 পজিশন: {position:>11,} shares    ║
 ║  💵 এক্সপোজার: {exposure:>9,} BDT      ║
-║  ⚡ রিস্ক: {risk_amount:>9,} BDT        ║
+║  ⚡ রিস্ক অ্যামাউন্ট: {risk_amount:>5,} BDT        ║
 ╚════════════════════════════════════╝
 """
     return box
 
 def create_table_view(data_list):
-    """বিস্তারিত টেবিল ভিউ"""
+    """বিস্তারিত টেবিল ভিউ - আপডেটেড"""
     if not data_list:
         return "📭 কোন ডাটা নেই।"
 
     table = "```\n"
-    table += "=" * 100 + "\n"
-    table += f"{'#':<3} {'Symbol':<8} {'Capital':>12} {'Risk%':>6} {'Buy':>6} {'SL':>6} {'TP':>6} {'RRR':>6} {'Diff':>6} {'Position':>10} {'Exposure':>12}\n"
-    table += "=" * 100 + "\n"
+    table += "=" * 120 + "\n"
+    table += f"{'#':<3} {'Symbol':<8} {'Capital':>10} {'Risk%':>5} {'Buy':>6} {'SL':>6} {'TP':>6} {'RRR':>5} {'Diff':>5} {'Profit%':>6} {'Position':>8} {'Exposure':>9}\n"
+    table += "=" * 120 + "\n"
 
     for i, item in enumerate(data_list, 1):
         rrr = calculate_rrr(item)
         diff = calculate_diff(item)
         position = calculate_position(item)
         exposure = calculate_exposure(item)
+        profit_percent = calculate_profit_percentage(item)
 
-        table += f"{i:<3} {item['symbol']:<8} {item['capital']:>12,.0f} {item['risk']*100:>5.1f}% {item['buy']:>6.1f} {item['sl']:>6.1f} {item['tp']:>6.1f} {rrr:>6.1f} {diff:>6.1f} {position:>10,} {exposure:>12,}\n"
+        table += f"{i:<3} {item['symbol']:<8} {item['capital']:>10,.0f} {item['risk']*100:>4.1f}% {item['buy']:>6.1f} {item['sl']:>6.1f} {item['tp']:>6.1f} {rrr:>5.1f} {diff:>5.1f} {profit_percent:>6.1f}% {position:>8,} {exposure:>9,}\n"
 
-    table += "=" * 100 + "\n"
+    table += "=" * 120 + "\n"
     table += "```"
 
     return table
 
 def create_compact_table(data_list):
-    """কম্প্যাক্ট টেবিল ভিউ"""
+    """কম্প্যাক্ট টেবিল ভিউ - আপডেটেড"""
     if not data_list:
         return "📭 কোন ডাটা নেই।"
 
     table = "```\n"
-    table += "=" * 60 + "\n"
-    table += f"{'#':<3} {'Symbol':<6} {'RRR':>5} {'Buy':>5} {'SL':>5} {'TP':>5} {'Diff':>5}\n"
-    table += "=" * 60 + "\n"
+    table += "=" * 70 + "\n"
+    table += f"{'#':<3} {'Symbol':<6} {'Buy':>6} {'SL':>6} {'TP':>6} {'RRR':>5} {'Diff':>5} {'Profit%':>6}\n"
+    table += "=" * 70 + "\n"
 
     for i, item in enumerate(data_list, 1):
         rrr = calculate_rrr(item)
         diff = calculate_diff(item)
-        table += f"{i:<3} {item['symbol']:<6} {rrr:>5.1f} {item['buy']:>5.1f} {item['sl']:>5.1f} {item['tp']:>5.1f} {diff:>5.1f}\n"
+        profit_percent = calculate_profit_percentage(item)
+        table += f"{i:<3} {item['symbol']:<6} {item['buy']:>6.1f} {item['sl']:>6.1f} {item['tp']:>6.1f} {rrr:>5.1f} {diff:>5.1f} {profit_percent:>6.1f}%\n"
 
-    table += "=" * 60 + "\n"
+    table += "=" * 70 + "\n"
     table += "```"
 
     return table
@@ -213,21 +259,24 @@ def get_statistics(data_list):
     total_capital = sum(item['capital'] for item in data_list)
     total_risk = sum(item['capital'] * item['risk'] for item in data_list)
     avg_rrr = sum(calculate_rrr(item) for item in data_list) / total_signals
+    avg_profit_percent = sum(calculate_profit_percentage(item) for item in data_list) / total_signals
 
     # সিম্বল অনুযায়ী গ্রুপিং
     symbols = {}
     for item in data_list:
         sym = item['symbol']
         if sym not in symbols:
-            symbols[sym] = {'count': 0, 'total_capital': 0}
+            symbols[sym] = {'count': 0, 'total_capital': 0, 'total_profit_percent': 0}
         symbols[sym]['count'] += 1
         symbols[sym]['total_capital'] += item['capital']
+        symbols[sym]['total_profit_percent'] += calculate_profit_percentage(item)
 
     return {
         'total_signals': total_signals,
         'total_capital': total_capital,
         'total_risk': total_risk,
         'avg_rrr': avg_rrr,
+        'avg_profit_percent': avg_profit_percent,
         'symbols': symbols
     }
 
@@ -405,18 +454,20 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = f"""📊 **আপনার পরিসংখ্যান**
 
-╔════════════════════════════╗
-║ মোট সিগন্যাল: {stats['total_signals']:<14} ║
-║ মোট ক্যাপিটাল: {stats['total_capital']:,.0f} BDT   ║
-║ মোট রিস্ক: {stats['total_risk']:,.0f} BDT      ║
-║ গড় RRR: {stats['avg_rrr']:.2f}                   ║
-╚════════════════════════════╝
+╔════════════════════════════════╗
+║ মোট সিগন্যাল: {stats['total_signals']:<18} ║
+║ মোট ক্যাপিটাল: {stats['total_capital']:>12,.0f} BDT   ║
+║ মোট রিস্ক: {stats['total_risk']:>12,.0f} BDT      ║
+║ গড় RRR: {stats['avg_rrr']:>14.2f}            ║
+║ গড় প্রফিট%: {stats['avg_profit_percent']:>11.2f}%         ║
+╚════════════════════════════════╝
 
 **সিম্বল অনুযায়ী:**
 """
 
     for sym, data in stats['symbols'].items():
-        text += f"• {sym}: {data['count']} টি (টোটাল {data['total_capital']:,.0f} BDT)\n"
+        avg_profit = data['total_profit_percent'] / data['count']
+        text += f"• {sym}: {data['count']} টি (টোটাল {data['total_capital']:,.0f} BDT, গড় প্রফিট {avg_profit:.1f}%)\n"
 
     keyboard = [[
         InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")
@@ -439,10 +490,11 @@ async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     writer = csv.writer(output)
 
     # হেডার
-    writer.writerow(['Symbol', 'Capital', 'Risk%', 'Buy', 'SL', 'TP', 'RRR', 'Position', 'Exposure', 'Timestamp'])
+    writer.writerow(['Symbol', 'Capital', 'Risk%', 'Buy', 'SL', 'TP', 'RRR', 'Diff', 'Profit%', 'Loss%', 'Position', 'Exposure', 'Risk Amount', 'Profit Amount', 'Loss Amount', 'Timestamp'])
 
     # ডাটা
     for item in all_data[user_id]:
+        pl = calculate_profit_loss(item)
         writer.writerow([
             item['symbol'],
             item['capital'],
@@ -451,8 +503,14 @@ async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item['sl'],
             item['tp'],
             calculate_rrr(item),
+            calculate_diff(item),
+            calculate_profit_percentage(item),
+            calculate_loss_percentage(item),
             calculate_position(item),
             calculate_exposure(item),
+            calculate_risk_amount(item),
+            pl['profit'],
+            pl['loss'],
             item['timestamp'][:10]
         ])
 
@@ -547,17 +605,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = f"""📊 **আপনার পরিসংখ্যান**
 
-╔════════════════════════════╗
-║ মোট সিগন্যাল: {stats['total_signals']:<14} ║
-║ মোট ক্যাপিটাল: {stats['total_capital']:,.0f} BDT   ║
-║ মোট রিস্ক: {stats['total_risk']:,.0f} BDT      ║
-║ গড় RRR: {stats['avg_rrr']:.2f}                   ║
-╚════════════════════════════╝
+╔════════════════════════════════╗
+║ মোট সিগন্যাল: {stats['total_signals']:<18} ║
+║ মোট ক্যাপিটাল: {stats['total_capital']:>12,.0f} BDT   ║
+║ মোট রিস্ক: {stats['total_risk']:>12,.0f} BDT      ║
+║ গড় RRR: {stats['avg_rrr']:>14.2f}            ║
+║ গড় প্রফিট%: {stats['avg_profit_percent']:>11.2f}%         ║
+╚════════════════════════════════╝
 
 **সিম্বল অনুযায়ী:**\n"""
 
         for sym, data in stats['symbols'].items():
-            text += f"• {sym}: {data['count']} টি (টোটাল {data['total_capital']:,.0f} BDT)\n"
+            avg_profit = data['total_profit_percent'] / data['count']
+            text += f"• {sym}: {data['count']} টি (টোটাল {data['total_capital']:,.0f} BDT, গড় প্রফিট {avg_profit:.1f}%)\n"
 
         keyboard = [[InlineKeyboardButton("🔙 মূল মেনু", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -589,9 +649,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             output = io.StringIO()
             writer = csv.writer(output)
 
-            writer.writerow(['Symbol', 'Capital', 'Risk%', 'Buy', 'SL', 'TP', 'RRR', 'Position', 'Exposure'])
+            writer.writerow(['Symbol', 'Capital', 'Risk%', 'Buy', 'SL', 'TP', 'RRR', 'Diff', 'Profit%', 'Loss%', 'Position', 'Exposure', 'Risk Amount', 'Profit Amount', 'Loss Amount'])
 
             for item in all_data[user_id]:
+                pl = calculate_profit_loss(item)
                 writer.writerow([
                     item['symbol'],
                     item['capital'],
@@ -600,8 +661,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     item['sl'],
                     item['tp'],
                     calculate_rrr(item),
+                    calculate_diff(item),
+                    calculate_profit_percentage(item),
+                    calculate_loss_percentage(item),
                     calculate_position(item),
-                    calculate_exposure(item)
+                    calculate_exposure(item),
+                    calculate_risk_amount(item),
+                    pl['profit'],
+                    pl['loss']
                 ])
 
             csv_data = output.getvalue()
@@ -701,7 +768,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • **0.01** - রিস্ক পার্সেন্টেজ (1%)
 • **30** - বাই প্রাইস
 • **29** - স্টপ লস (SL)
-• **39** - টার্গেট প্রাইস (TP)""",
+• **39** - টার্গেট প্রাইস (TP)
+
+**আউটপুটে দেখাবে:**
+• প্রফিট/লস অ্যামাউন্ট (টাকায়)
+• প্রফিট/লস পার্সেন্টেজ
+• RRR, ডিফ, পজিশন, এক্সপোজার""",
             parse_mode='Markdown'
         )
         return
@@ -713,7 +785,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • **RRR** = (TP - Buy) / (Buy - SL)
 • **পজিশন** = (ক্যাপিটাল × রিস্ক) / (Buy - SL)
 • **এক্সপোজার** = পজিশন × Buy
-• **রিস্ক অ্যামাউন্ট** = ক্যাপিটাল × রিস্ক""",
+• **রিস্ক অ্যামাউন্ট** = ক্যাপিটাল × রিস্ক
+• **প্রফিট অ্যামাউন্ট** = (TP - Buy) × পজিশন
+• **লস অ্যামাউন্ট** = (Buy - SL) × পজিশন
+• **প্রফিট%** = ((TP - Buy) / Buy) × 100
+• **লস%** = ((Buy - SL) / Buy) × 100""",
             parse_mode='Markdown'
         )
         return
